@@ -7,7 +7,7 @@
  (synopsis "Static analyzer for C")
  (description "Sparrow is a state-of-the-art static analyzer that aims to verify the absence of fatal bugs in C source.")
  (depends
-  (ocaml (>= 4.04.0))
+  (ocaml (>= 5.3.0))
   (dune (>= 2.1))
   batteries
   ocamlgraph
@@ -16,4 +16,4 @@
   pyml
   ppx_compare
   ppx_deriving
-  (goblint-cil (= 1.7.4))))
+  (goblint-cil (= 2.1.1))))

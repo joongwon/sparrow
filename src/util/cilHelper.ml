@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -23,6 +24,7 @@ let rec s_exps : exp list -> string =
 and s_exp : exp -> string = function
   | Const c -> s_const c
   | Lval l -> s_lv l
+  | Real _ | Imag _ -> invalid_arg "Real and Imag expressions are not supported"
   | SizeOf t -> "SizeOf(" ^ s_type t ^ ")"
   | SizeOfE e -> "SizeOfE(" ^ s_exp e ^ ")"
   | SizeOfStr s -> "SizeOfStr(" ^ s ^ ")"
@@ -32,7 +34,7 @@ and s_exp : exp -> string = function
   | BinOp (b, e1, e2, _) -> s_exp_paren e1 ^ s_bop b ^ s_exp_paren e2
   | Question (c, e1, e2, _) ->
       s_exp_paren c ^ " ? " ^ s_exp_paren e1 ^ " : " ^ s_exp_paren e2
-  | CastE (t, e) -> "(" ^ s_type t ^ ")" ^ s_exp_paren e
+  | CastE (_, t, e) -> "(" ^ s_type t ^ ")" ^ s_exp_paren e
   | AddrOf l -> "&" ^ s_lv l
   | AddrOfLabel _ -> invalid_arg "AddrOfLabel is not supported."
   | StartOf l -> "StartOf(" ^ s_lv l ^ ")"
@@ -70,11 +72,12 @@ and s_bop b = tostring (d_binop () b)
 and s_instr : instr -> string =
  fun i ->
   match i with
-  | Set (lv, exp, _) -> "Set(" ^ s_lv lv ^ "," ^ s_exp exp ^ ")"
-  | Call (Some lv, fexp, params, _) ->
+  | Set (lv, exp, _, _) -> "Set(" ^ s_lv lv ^ "," ^ s_exp exp ^ ")"
+  | Call (Some lv, fexp, params, _, _) ->
       s_lv lv ^ ":= Call(" ^ s_exp fexp ^ s_exps params ^ ")"
-  | Call (None, fexp, params, _) -> "Call(" ^ s_exp fexp ^ s_exps params ^ ")"
+  | Call (None, fexp, params, _, _) -> "Call(" ^ s_exp fexp ^ s_exps params ^ ")"
   | Asm _ -> "Asm"
+  | VarDecl _ -> invalid_arg "CIL VarDecl instructions are not supported"
 
 and s_instrs : instr list -> string =
  fun instrs -> List.fold_left (fun s i -> s ^ s_instr i) "" instrs
@@ -123,7 +126,7 @@ let not_binop : binop -> binop =
 let rec make_cond_simple : exp -> exp option =
  fun cond ->
   match cond with
-  | BinOp (op, CastE (_, e1), e2, t) | BinOp (op, e1, CastE (_, e2), t) ->
+  | BinOp (op, CastE (_, _, e1), e2, t) | BinOp (op, e1, CastE (_, _, e2), t) ->
       let newe = BinOp (op, e1, e2, t) in
       make_cond_simple newe
   | BinOp (op, Lval _, _, _)
@@ -151,7 +154,7 @@ let rec make_cond_simple : exp -> exp option =
   | _ -> None
 
 let rec remove_cast = function
-  | Cil.CastE (_, e) -> remove_cast e
+  | Cil.CastE (_, _, e) -> remove_cast e
   | Cil.BinOp (b, e1, e2, t) -> Cil.BinOp (b, remove_cast e1, remove_cast e2, t)
   | Cil.UnOp (u, e, t) -> Cil.UnOp (u, remove_cast e, t)
   | e -> e

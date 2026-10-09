@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -207,8 +208,8 @@ let add_extern global cond feat =
 let incptr_itself_by_one (lv, e) =
   match (lv, e) with
   | ( (Var x, NoOffset),
-      BinOp (PlusPI, Lval (Var y, NoOffset), Const (CInt64 (i, _, _)), _) )
-    when x.vname = y.vname && Cil.i64_to_int i = 1 ->
+      BinOp (PlusPI, Lval (Var y, NoOffset), Const (CInt (i, _, _)), _) )
+    when x.vname = y.vname && Cilint.int_of_cilint i = 1 ->
       true
   | _ -> false
 
@@ -303,7 +304,7 @@ let add_array_content global cond cfg feat =
     | Lval lval -> exists_deref_lval lval
     | UnOp (_, e, _) -> exists_deref e
     | BinOp (_, e1, e2, _) -> exists_deref e1 || exists_deref e2
-    | Question (e, _, _, _) | CastE (_, e) -> exists_deref e
+    | Question (e, _, _, _) | CastE (_, _, e) -> exists_deref e
     | _ -> false
   in
   if exists_deref cond then { feat with array_content = true } else feat
@@ -602,8 +603,8 @@ let add_diff_array_access cfg scc feat =
 let inc_itself_by_one (lv, e) =
   match (lv, e) with
   | ( (Var x, NoOffset),
-      BinOp (PlusA, Lval (Var y, NoOffset), Const (CInt64 (i, _, _)), _) )
-    when x.vname = y.vname && Cil.i64_to_int i = 1 ->
+      BinOp (PlusA, Lval (Var y, NoOffset), Const (CInt (i, _, _)), _) )
+    when x.vname = y.vname && Cilint.int_of_cilint i = 1 ->
       true
   | _ -> false
 
@@ -728,13 +729,13 @@ let rec generate_loop_info loopid stmts loop_info =
   List.fold_left
     (fun info stmt ->
       match stmt.skind with
-      | Loop (blk, loc, _, _) -> generate_loop_info loc blk.bstmts info
-      | If (_, tb, fb, _) ->
+      | Loop (blk, loc, _, _, _) -> generate_loop_info loc blk.bstmts info
+      | If (_, tb, fb, _, _) ->
           BatMap.add stmt.sid (CilHelper.s_location loopid) info
           |> generate_loop_info loopid tb.bstmts
           |> generate_loop_info loopid fb.bstmts
       | Block blk -> generate_loop_info loopid blk.bstmts info
-      | Switch (_, blk, _, _) -> generate_loop_info loopid blk.bstmts info
+      | Switch (_, blk, _, _, _) -> generate_loop_info loopid blk.bstmts info
       | _ -> BatMap.add stmt.sid (CilHelper.s_location loopid) info)
     loop_info stmts
 
@@ -807,7 +808,7 @@ class loopRemoveVisitor (loops : string BatSet.t) =
 
     method vstmt (s : Cil.stmt) =
       match s.skind with
-      | Loop (blk, loc, _, _) when BatSet.mem (CilHelper.s_location loc) loops
+      | Loop (blk, loc, _, _, _) when BatSet.mem (CilHelper.s_location loc) loops
         ->
           Cil.ChangeDoChildrenPost (Cil.mkStmt (Cil.Block blk), id)
       | _ -> Cil.DoChildren

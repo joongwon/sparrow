@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -249,7 +250,7 @@ let rec unsound_exp : Cil.exp -> bool =
     when bop = Cil.PlusA || bop = Cil.MinusA ->
       true
   | Cil.BinOp (_, e1, e2, _) -> unsound_exp e1 || unsound_exp e2
-  | Cil.CastE (_, e) -> unsound_exp e
+  | Cil.CastE (_, _, e) -> unsound_exp e
   | Cil.Lval lv -> unsound_lv lv
   | _ -> false
 
@@ -282,7 +283,7 @@ let formal_param : Global.t -> query -> bool =
   let formals = IntraCfg.get_formals cfg |> List.map (fun x -> x.Cil.vname) in
   let rec find_exp = function
     | Cil.BinOp (_, e1, e2, _) -> find_exp e1 || find_exp e2
-    | Cil.CastE (_, e) -> find_exp e
+    | Cil.CastE (_, _, e) -> find_exp e
     | Cil.Lval lv -> find_lv lv
     | _ -> false
   and find_lv = function

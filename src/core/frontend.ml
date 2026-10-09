@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -35,7 +36,7 @@ let parseOneFile : string -> C.file =
   (* PARSE and convert to CIL *)
   if !Cilutil.printStages then ignore (E.log "Parsing %s\n" fname);
   let cil = F.parse fname () in
-  if not (Feature.enabled "epicenter") then Rmtmps.removeUnusedTemps cil;
+  if not (Feature.enabled "epicenter") then RmUnused.removeUnused cil;
   cil
 
 let parse : unit -> C.file =
@@ -53,8 +54,8 @@ let parse : unit -> C.file =
 
 let makeCFGinfo : Cil.file -> Cil.file =
  fun f ->
-  ignore (Partial.calls_end_basic_blocks f);
-  ignore (Partial.globally_unique_vids f);
+  ignore (Makecfg.MakeCFG.calls_end_basic_blocks f);
+  ignore (Makecfg.MakeCFG.globally_unique_vids f);
   Cil.iterGlobals f (fun glob ->
       match glob with
       | Cil.GFun (fd, _) ->

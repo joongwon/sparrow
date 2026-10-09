@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (* Copyright (c) 2007-present.                                         *)
 (* Programming Research Laboratory (ROPAS), Seoul National University. *)

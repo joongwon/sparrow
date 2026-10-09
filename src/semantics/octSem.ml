@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -73,9 +74,9 @@ let octloc_to_texpr : OctLoc.t -> Texpr1.expr =
  fun l -> Texpr1.Var (Apron.Var.of_string (OctLoc.to_string l))
 
 let const_to_texpr : Cil.constant -> Texpr1.expr = function
-  | Cil.CInt64 (i, _, _) -> Texpr1.Cst (Coeff.s_of_int (Int64.to_int i))
-  | Cil.CStr s -> invalid_arg ("octSem.ml: const_to_texpr string " ^ s)
-  | Cil.CWStr s -> invalid_arg "octSem.ml: const_to_texpr wide string"
+  | Cil.CInt (i, _, _) -> Texpr1.Cst (Coeff.s_of_int (Cilint.int_of_cilint i))
+  | Cil.CStr (s, _) -> invalid_arg ("octSem.ml: const_to_texpr string " ^ s)
+  | Cil.CWStr (s, _) -> invalid_arg "octSem.ml: const_to_texpr wide string"
   | Cil.CChr c -> Texpr1.Cst (Coeff.s_of_int (int_of_char c))
   | Cil.CReal (f, _, _) -> Texpr1.Cst (Coeff.s_of_int (int_of_float (ceil f)))
   (* BatEnum is not evaluated correctly in our analysis. *)
@@ -132,7 +133,7 @@ let rec exp_to_texpr :
   | Cil.SizeOfE e -> [ sizeof_to_texpr (Cil.typeOf e) ]
   | Cil.SizeOfStr s -> [ Texpr1.Cst (Coeff.s_of_int (String.length s + 1)) ]
   | Cil.AlignOfE _ -> [ Texpr1.Cst (Coeff.Interval Interval.top) ]
-  | Cil.CastE (_, e) -> exp_to_texpr pid packconf pack e ptrmem mem
+  | Cil.CastE (_, _, e) -> exp_to_texpr pid packconf pack e ptrmem mem
   | Cil.UnOp (uop, e, _) -> uop_to_texpr pid packconf pack uop e ptrmem mem
   | Cil.BinOp (bop, e1, e2, _) ->
       binop_to_texpr pid packconf pack bop e1 e2 ptrmem mem

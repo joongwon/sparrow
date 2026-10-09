@@ -1,3 +1,4 @@
+open GoblintCil
 open Vocab
 open Cil
 open IntraCfg
@@ -55,6 +56,8 @@ let eval_bop b v1 v2 itv1 itv2 =
 
 let rec eval pid e itvmem mem =
   match e with
+  | Cil.Real _ | Cil.Imag _ ->
+      invalid_arg "Real and Imag expressions are not supported"
   | Cil.Const _ | Cil.SizeOf _ | Cil.SizeOfE _ | Cil.SizeOfStr _ | Cil.AlignOf _
   | Cil.AlignOfE _
   | Cil.UnOp (_, _, _)
@@ -70,7 +73,7 @@ let rec eval pid e itvmem mem =
   | Cil.Question (_, e2, e3, _) ->
       (* pruning *)
       Val.join (eval pid e2 itvmem mem) (eval pid e3 itvmem mem)
-  | Cil.CastE (_, e) -> eval pid e itvmem mem
+  | Cil.CastE (_, _, e) -> eval pid e itvmem mem
 
 let eval_list pid exps itvmem mem =
   List.map (fun e -> eval pid e itvmem mem) exps

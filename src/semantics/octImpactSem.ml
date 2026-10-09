@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -74,11 +75,11 @@ let rec set :
           else PowOctLoc.fold2 AbsOct.weak_set_variable lv_set rv_set o )
         |> fun o -> update mode global pid o mem
         (* x = y + c *)
-    | BinOp (bop, Lval lval, Const (CInt64 (i, _, _)), _)
-    | BinOp (bop, Const (CInt64 (i, _, _)), Lval lval, _)
+    | BinOp (bop, Lval lval, Const (CInt (i, _, _)), _)
+    | BinOp (bop, Const (CInt (i, _, _)), Lval lval, _)
     (* heuristic: forget the relationship only if x = x + 1 *)
-      when (bop = PlusA && Cil.i64_to_int i = 1)
-           || (bop = MinusA && Cil.i64_to_int i = -1) ->
+      when (bop = PlusA && Cilint.int_of_cilint i = 1)
+           || (bop = MinusA && Cilint.int_of_cilint i = -1) ->
         ItvSem.eval_lv pid lval ptrmem |> PowOctLoc.of_locs |> fun rv_set ->
         if PowOctLoc.meet lv_set rv_set |> PowOctLoc.is_empty then
           set mode global ptrmem pid lv_set (Lval lval) mem

@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -193,7 +194,7 @@ let rec simplify_exp e = e |> remove_casts |> remove_coeffs
 
 and remove_casts e =
   match e with
-  | CastE (typ, e1) -> remove_casts e1
+  | CastE (_, typ, e1) -> remove_casts e1
   | BinOp (bop, e1, e2, typ) ->
       BinOp (bop, remove_casts e1, remove_casts e2, typ)
   | UnOp (uop, e1, typ) -> UnOp (uop, remove_casts e1, typ)
@@ -224,24 +225,24 @@ and is_var e = match e with Lval (Var _, NoOffset) -> true | _ -> false
 let inc_itself_by_one (lv, e) =
   match (lv, e) with
   | ( (Var x, NoOffset),
-      BinOp (PlusA, Lval (Var y, NoOffset), Const (CInt64 (i, _, _)), _) )
-    when x.vname = y.vname && Cil.i64_to_int i = 1 ->
+      BinOp (PlusA, Lval (Var y, NoOffset), Const (CInt (i, _, _)), _) )
+    when x.vname = y.vname && Cilint.int_of_cilint i = 1 ->
       true
   | _ -> false
 
 let incptr_itself_by_one (lv, e) =
   match (lv, e) with
   | ( (Var x, NoOffset),
-      BinOp (PlusPI, Lval (Var y, NoOffset), Const (CInt64 (i, _, _)), _) )
-    when x.vname = y.vname && Cil.i64_to_int i = 1 ->
+      BinOp (PlusPI, Lval (Var y, NoOffset), Const (CInt (i, _, _)), _) )
+    when x.vname = y.vname && Cilint.int_of_cilint i = 1 ->
       true
   | _ -> false
 
 let inc_itself_by_const (lv, e) =
   match (lv, e) with
   | ( (Var x, NoOffset),
-      BinOp (PlusA, Lval (Var y, NoOffset), Const (CInt64 (i, _, _)), _) )
-    when x.vname = y.vname && Cil.i64_to_int i > 1 ->
+      BinOp (PlusA, Lval (Var y, NoOffset), Const (CInt (i, _, _)), _) )
+    when x.vname = y.vname && Cilint.int_of_cilint i > 1 ->
       true
   | _ -> false
 
@@ -256,16 +257,16 @@ let inc_itself_by_var (lv, e) =
 let incptr_itself_by_const (lv, e) =
   match (lv, e) with
   | ( (Var x, NoOffset),
-      BinOp (PlusPI, Lval (Var y, NoOffset), Const (CInt64 (i, _, _)), _) )
-    when x.vname = y.vname && Cil.i64_to_int i > 1 ->
+      BinOp (PlusPI, Lval (Var y, NoOffset), Const (CInt (i, _, _)), _) )
+    when x.vname = y.vname && Cilint.int_of_cilint i > 1 ->
       true
   | _ -> false
 
 let mul_itself_by_const (lv, e) =
   match (lv, e) with
   | ( (Var x, NoOffset),
-      BinOp (Mult, Lval (Var y, NoOffset), Const (CInt64 (i, _, _)), _) )
-    when x.vname = y.vname && Cil.i64_to_int i > 1 ->
+      BinOp (Mult, Lval (Var y, NoOffset), Const (CInt (i, _, _)), _) )
+    when x.vname = y.vname && Cilint.int_of_cilint i > 1 ->
       true
   | _ -> false
 

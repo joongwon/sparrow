@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -54,11 +55,11 @@ let update :
 let eval_const : Cil.constant -> Val.t =
  fun cst ->
   match cst with
-  | Cil.CInt64 (i64, _, _) ->
-      let itv = try Itv.of_int (Cil.i64_to_int i64) with _ -> Itv.top in
+  | Cil.CInt (i64, _, _) ->
+      let itv = try Itv.of_int (Cilint.int_of_cilint i64) with _ -> Itv.top in
       Val.of_itv itv
-  | Cil.CStr s -> Val.of_itv Itv.top
-  | Cil.CWStr s -> Val.of_itv Itv.top
+  | Cil.CStr (s, _) -> Val.of_itv Itv.top
+  | Cil.CWStr (s, _) -> Val.of_itv Itv.top
   | Cil.CChr c -> Val.of_itv (Itv.of_int (int_of_char c))
   (* Float numbers are modified to itvs.  If you want to make a
      precise and sound analysis for float numbers, you have to
@@ -166,6 +167,8 @@ and eval ?(spec = Spec.empty) : Proc.t -> Cil.exp -> Mem.t -> Val.t =
   match e with
   | Cil.Const c -> eval_const c
   | Cil.Lval l -> lookup (eval_lv ~spec pid l mem) mem
+  | Cil.Real _ | Cil.Imag _ ->
+      invalid_arg "Real and Imag expressions are not supported"
   | Cil.SizeOf t ->
       Val.of_itv (try CilHelper.byteSizeOf t |> Itv.of_int with _ -> Itv.pos)
   | Cil.SizeOfE e ->
@@ -185,7 +188,7 @@ and eval ?(spec = Spec.empty) : Proc.t -> Cil.exp -> Mem.t -> Val.t =
       else if Itv.eq (Itv.of_int 0) i1 then eval ~spec pid e3 mem
       else if not (Itv.le (Itv.of_int 0) i1) then eval ~spec pid e2 mem
       else Val.join (eval ~spec pid e2 mem) (eval ~spec pid e3 mem)
-  | Cil.CastE (t, e) -> (
+  | Cil.CastE (_, t, e) -> (
       let v = eval ~spec pid e mem in
       try Val.cast (Cil.typeOf e) t v with _ -> v)
   | Cil.AddrOf l -> eval_lv ~spec pid l mem |> Val.of_pow_loc
@@ -443,7 +446,7 @@ let rec model_fgets mode spec pid (lvo, exps) (mem, global) =
       |> update mode spec global buf_lv buf_val
       |> update mode spec global allocsites Val.itv_top
       |> fun mem -> (mem, global)
-  | _, CastE (_, buf) :: size :: e ->
+  | _, CastE (_, _, buf) :: size :: e ->
       model_fgets mode spec pid (lvo, buf :: size :: e) (mem, global)
   | _ -> (mem, global)
 
@@ -471,7 +474,7 @@ let rec model_sprintf mode spec pid (lvo, exps) (mem, global) =
             (Val.of_itv null_pos)
       | _ -> id)
       |> fun mem -> (mem, global)
-  | [ CastE (_, buf); str ] | [ buf; CastE (_, str) ] ->
+  | [ CastE (_, _, buf); str ] | [ buf; CastE (_, _, str) ] ->
       model_sprintf mode spec pid (lvo, [ buf; str ]) (mem, global)
   | _ ->
       begin match lvo with
@@ -588,8 +591,8 @@ let model_getpwent mode spec node pid lvo f (mem, global) =
 
 let rec model_strcpy mode spec node pid es (mem, global) =
   match es with
-  | CastE (_, e) :: t -> model_strcpy mode spec node pid (e :: t) (mem, global)
-  | [ dst; CastE (_, e) ] ->
+  | CastE (_, _, e) :: t -> model_strcpy mode spec node pid (e :: t) (mem, global)
+  | [ dst; CastE (_, _, e) ] ->
       model_strcpy mode spec node pid [ dst; e ] (mem, global)
   | [ Lval dst; Lval src ]
   | [ StartOf dst; StartOf src ]
@@ -607,7 +610,7 @@ let rec model_strcpy mode spec node pid es (mem, global) =
 
 let rec model_strncpy mode spec node pid es (mem, global) =
   match es with
-  | CastE (_, e) :: t -> model_strncpy mode spec node pid (e :: t) (mem, global)
+  | CastE (_, _, e) :: t -> model_strncpy mode spec node pid (e :: t) (mem, global)
   | Lval dst :: _ :: size :: _ | StartOf dst :: _ :: size :: _ ->
       let arr = Val.array_of_val (lookup (eval_lv ~spec pid dst mem) mem) in
       let sz = Val.itv_of_val (eval ~spec pid size mem) in
@@ -621,8 +624,8 @@ let rec model_strncpy mode spec node pid es (mem, global) =
 
 let rec model_strcat mode spec node pid es (mem, global) =
   match es with
-  | CastE (_, e) :: t -> model_strcat mode spec node pid (e :: t) (mem, global)
-  | [ dst; CastE (_, e) ] ->
+  | CastE (_, _, e) :: t -> model_strcat mode spec node pid (e :: t) (mem, global)
+  | [ dst; CastE (_, _, e) ] ->
       model_strcat mode spec node pid [ dst; e ] (mem, global)
   | [ Lval dst; Lval src ]
   | [ StartOf dst; StartOf src ]
@@ -640,7 +643,7 @@ let rec model_strcat mode spec node pid es (mem, global) =
 
 let rec model_strchr mode spec node pid (lvo, exps) (mem, global) =
   match (lvo, exps) with
-  | Some _, CastE (_, e) :: t ->
+  | Some _, CastE (_, _, e) :: t ->
       model_strchr mode spec node pid (lvo, e :: t) (mem, global)
   | Some lv, Lval str :: _ | Some lv, StartOf str :: _ ->
       let str_arr = Val.array_of_val (lookup (eval_lv ~spec pid str mem) mem) in
@@ -654,7 +657,7 @@ let rec model_strchr mode spec node pid (lvo, exps) (mem, global) =
 
 let sparrow_array_init mode spec node pid exps (mem, global) =
   match (List.nth exps 0, List.nth exps 1) with
-  | arr, Cil.Const (Cil.CInt64 (_, _, _)) ->
+  | arr, Cil.Const (Cil.CInt (_, _, _)) ->
       let lv =
         eval ~spec pid arr mem |> Val.array_of_val |> ArrayBlk.pow_loc_of_array
       in
@@ -664,7 +667,7 @@ let sparrow_array_init mode spec node pid exps (mem, global) =
           Val.bot (List.tl exps)
       in
       (update mode spec global lv v mem, global)
-  | arr, Cil.Const (Cil.CStr s) ->
+  | arr, Cil.Const (Cil.CStr (s, _)) ->
       let lv =
         eval ~spec pid arr mem |> Val.array_of_val |> ArrayBlk.pow_loc_of_array
       in
@@ -672,7 +675,7 @@ let sparrow_array_init mode spec node pid exps (mem, global) =
         List.fold_left
           (fun v e ->
             match e with
-            | Cil.Const (Cil.CStr s) ->
+            | Cil.Const (Cil.CStr (s, _)) ->
                 Val.join (eval_string_alloc node s mem) v
             | _ -> v)
           Val.bot (List.tl exps)

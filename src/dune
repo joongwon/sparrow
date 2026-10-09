@@ -5,12 +5,9 @@
  (public_name sparrow.lib)
  (wrapped false)
  (libraries batteries findlib findlib.internal findlib.dynload dynlink
-   goblint-cil goblint-cil.partial goblint-cil.blockinggraph
-   goblint-cil.callgraph goblint-cil.canonicalize goblint-cil.ccl
-   goblint-cil.cqualann goblint-cil.dataslicing goblint-cil.epicenter
-   goblint-cil.heapify goblint-cil.inliner goblint-cil.liveness
-   goblint-cil.llvm goblint-cil.logcalls goblint-cil.logwrites
-   goblint-cil.oneret goblint-cil.pta goblint-cil.sfi goblint-cil.zrapp gmp
+   goblint-cil goblint-cil.all-features goblint-cil.dataslicing
+   goblint-cil.liveness goblint-cil.makecfg goblint-cil.pta
+   goblint-cil.syntacticsearch goblint-cil.zrapp gmp
    apron apron.octMPQ ocamlgraph yojson pyml threads str unix num)
  (preprocess
   (pps ppx_compare ppx_deriving.std))

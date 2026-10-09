@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -80,9 +81,9 @@ module Cmd = struct
    fun s ->
     match s with
     | Instr instrs -> Cinstr instrs
-    | If (exp, b1, b2, loc) -> Cif (exp, b1, b2, loc)
-    | Loop (_, loc, _, _) -> CLoop loc
-    | Return (expo, loc) -> Creturn (expo, loc)
+    | If (exp, b1, b2, loc, _) -> Cif (exp, b1, b2, loc)
+    | Loop (_, loc, _, _, _) -> CLoop loc
+    | Return (expo, loc, _) -> Creturn (expo, loc)
     | _ -> Cskip
 
   let rec to_string : t -> string =
@@ -341,9 +342,11 @@ let flatten_instructions : t -> t =
             List.map
               (fun i ->
                 match i with
-                | Set (lv, e, loc) -> Cmd.Cset (lv, e, loc)
-                | Call (lvo, f, args, loc) -> Cmd.Ccall (lvo, f, args, loc)
-                | Asm (a, b, c, d, e, f) -> Cmd.Casm (a, b, c, d, e, f))
+                | Set (lv, e, loc, _) -> Cmd.Cset (lv, e, loc)
+                | Call (lvo, f, args, loc, _) -> Cmd.Ccall (lvo, f, args, loc)
+                | Asm (a, b, c, d, e, f) -> Cmd.Casm (a, b, c, d, e, f)
+                | VarDecl _ ->
+                    failwith "CIL VarDecl instructions are not supported")
               instrs
           in
           let pairs = List.map (fun c -> (Node.make (), c)) cmds in
@@ -400,7 +403,7 @@ let make_init_loop fd lv exp loc entry f g =
   let init_node = Node.make () in
   let idxinfo = Cil.makeTempVar fd (Cil.TInt (IInt, [])) in
   let idx = (Cil.Var idxinfo, Cil.NoOffset) in
-  let init_value = Cil.Const (Cil.CInt64 (Int64.zero, IInt, None)) in
+  let init_value = Cil.Const (Cil.CInt (Cilint.zero_cilint, IInt, None)) in
   let init_cmd = Cmd.Cset (idx, init_value, loc) in
   let g = add_cmd init_node init_cmd g in
   (* while (i < exp) *)
@@ -430,7 +433,7 @@ let make_init_loop fd lv exp loc entry f g =
         Cil.BinOp
           ( Cil.PlusA,
             Cil.Lval idx,
-            Cil.Const (Cil.CInt64 (Int64.one, IInt, None)),
+            Cil.Const (Cil.CInt (Cilint.one_cilint, IInt, None)),
             Cil.intType ),
         loc )
   in
@@ -462,7 +465,10 @@ let rec make_nested_array :
         let term, g = make_array fd tmp t size loc assume_node g in
         let cast_node = Node.make () in
         let cast_cmd =
-          Cmd.Cset (element, Cil.CastE (TPtr (t, []), Cil.Lval tmp), loc)
+          Cmd.Cset
+            (element,
+             Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp) ~newt:(TPtr (t, [])),
+             loc)
         in
         let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
         make_nested_array fd element t size loc cast_node initialize g
@@ -503,7 +509,7 @@ and generate_allocs_field :
           let cast_cmd =
             Cmd.Cset
               ( field,
-                Cil.CastE (Cil.TPtr (typ, []), Cil.Lval tmp),
+                Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp) ~newt:(Cil.TPtr (typ, [])),
                 fieldinfo.floc )
           in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
@@ -539,7 +545,7 @@ let rec generate_allocs :
           let cast_cmd =
             Cmd.Cset
               ( lv,
-                Cil.CastE (Cil.TPtr (unrollTypeDeep typ, []), Cil.Lval tmp),
+                Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp) ~newt:(Cil.TPtr (unrollTypeDeep typ, [])),
                 varinfo.vdecl )
           in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
@@ -570,7 +576,7 @@ let transform_string_allocs : Cil.fundec -> t -> t =
   let rec replace_str : Cil.exp -> Cil.exp * (Cil.lval * string) list =
    fun e ->
     match e with
-    | Const (CStr s) ->
+    | Const (CStr (s, _)) ->
         let tempinfo =
           Cil.makeTempVar fd (Cil.TPtr (Cil.TInt (IChar, []), []))
         in
@@ -600,9 +606,9 @@ let transform_string_allocs : Cil.fundec -> t -> t =
         match l1 @ l2 with
         | [] -> (e, [])
         | _ -> (BinOp (b, e1', e2', t), l1 @ l2))
-    | CastE (t, exp) -> (
+    | CastE (ck, t, exp) -> (
         let exp', l = replace_str exp in
-        match l with [] -> (e, l) | _ -> (CastE (t, exp'), l))
+        match l with [] -> (e, l) | _ -> (CastE (ck, t, exp'), l))
     | _ -> (e, [])
   in
   let generate_sallocs :
@@ -717,14 +723,18 @@ let transform_allocs : Cil.fundec -> t -> t =
             let g = add_cmd node cmd g in
             (node, g)
       end
-    | SizeOf typ | CastE (_, SizeOf typ) -> begin
+    | SizeOf typ | CastE (_, _, SizeOf typ) -> begin
         let typ = Cil.unrollTypeDeep typ in
         match (lv, typ) with
         | (Var v, NoOffset), TComp (comp, _) ->
             (* dynamic struct alloc *)
             let cast_node = Node.make () in
             let cast_cmd =
-              Cmd.Cset (lv, Cil.CastE (Cil.TPtr (typ, []), Cil.Lval lv), loc)
+              Cmd.Cset
+                (lv,
+                 Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval lv)
+                   ~newt:(Cil.TPtr (typ, [])),
+                 loc)
             in
             g
             |> add_cmd node (Cmd.Calloc (lv, Cmd.Array exp, false, loc))
@@ -825,7 +835,11 @@ let rec process_gvardecl :
       let term, g = make_array fd tmp typ exp loc entry g in
       let cast_node = Node.make () in
       let cast_cmd =
-        Cmd.Cset (lv, Cil.CastE (Cil.TPtr (typ, []), Cil.Lval tmp), loc)
+        Cmd.Cset
+          (lv,
+           Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp)
+             ~newt:(Cil.TPtr (typ, [])),
+           loc)
       in
       let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
       let term, g = make_nested_array fd lv typ exp loc cast_node true g in

@@ -1,3 +1,4 @@
+open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -98,7 +99,7 @@ and c_exp : Cil.exp -> Cil.location -> t list =
       | Div | Mod -> (DivExp (e1, e2, loc) :: c_exp e1 loc) @ c_exp e2 loc
       | _ -> c_exp e1 loc @ c_exp e2 loc
       end
-  | CastE (_, e) -> c_exp e loc
+  | CastE (_, _, e) -> c_exp e loc
   | AddrOf lv -> c_lv lv loc
   | StartOf lv -> c_lv lv loc
   | _ -> []
