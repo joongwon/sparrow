@@ -10,10 +10,11 @@
 (***********************************************************************)
 (** Worklist *)
 
-module type S =
-sig
+module type S = sig
   module DUGraph : Dug.S
+
   type t
+
   val init : DUGraph.t -> t
   val pick : t -> (BasicDom.Node.t * t) option
   val push : BasicDom.Node.t -> BasicDom.Node.t -> t -> t
@@ -21,4 +22,4 @@ sig
   val is_loopheader : BasicDom.Node.t -> t -> bool
 end
 
-module Make(DUGraph : Dug.S) : S with type DUGraph.t = DUGraph.t
+module Make (DUGraph : Dug.S) : S with type DUGraph.t = DUGraph.t

@@ -7,8 +7,8 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Frontend *)
 open Cil
+(** Frontend *)
 
 val files : string list ref
 val marshal_file : string ref

@@ -9,14 +9,14 @@
 (*                                                                     *)
 (***********************************************************************)
 (** Accessibility information *)
-module type S =
-sig
+module type S = sig
   module Loc : AbsDom.SET
   module PowLoc : PowDom.CPO with type elt = Loc.t
-  module Info :
-  sig
+
+  module Info : sig
     type t
     type kind
+
     val empty : t
     val def : kind
     val use : kind
@@ -44,8 +44,10 @@ sig
   end
 
   module LocMap : BatMap.S with type key = Loc.t
+
   type t
   type info = Info.t
+
   val empty : t
   val add_node : BasicDom.Node.t -> info -> t -> t
   val add_proc : BasicDom.Proc.t -> info -> t -> t
@@ -58,7 +60,10 @@ sig
   val add_total_abslocs : PowLoc.t -> t -> t
   val fold : (BasicDom.Node.t -> info -> 'a -> 'a) -> t -> 'a -> 'a
   val fold_proc : (BasicDom.Proc.t -> info -> 'a -> 'a) -> t -> 'a -> 'a
-  val fold_proc_local : (BasicDom.Proc.t -> PowLoc.t -> 'a -> 'a) -> t -> 'a -> 'a
+
+  val fold_proc_local :
+    (BasicDom.Proc.t -> PowLoc.t -> 'a -> 'a) -> t -> 'a -> 'a
+
   val total_abslocs : t -> PowLoc.t
   val find_node : BasicDom.Node.t -> t -> info
   val find_proc : BasicDom.Proc.t -> t -> info
@@ -72,4 +77,5 @@ sig
   val restrict_access : t -> PowLoc.t -> t
 end
 
-module Make(Dom: MapDom.CPO) : S with type PowLoc.t = Dom.PowA.t and type Loc.t = Dom.A.t
+module Make (Dom : MapDom.CPO) :
+  S with type PowLoc.t = Dom.PowA.t and type Loc.t = Dom.A.t

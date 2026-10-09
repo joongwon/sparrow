@@ -25,7 +25,6 @@ val s_instr : Cil.instr -> string
 val s_instrs : Cil.instr list -> string
 val s_location : Cil.location -> string
 val eq_lval : Cil.lval -> Cil.lval -> bool
-
 val rev_binop : Cil.binop -> Cil.binop
 val not_binop : Cil.binop -> Cil.binop
 val make_cond_simple : Cil.exp -> Cil.exp option

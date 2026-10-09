@@ -12,14 +12,14 @@ open Vocab
 open AbsDom
 open BasicDom
 
-module type S =
-sig
+module type S = sig
   module Loc : SET
   module PowLoc : PowDom.CPO with type elt = Loc.t
-  module Info :
-  sig
+
+  module Info : sig
     type t
     type kind
+
     val empty : t
     val def : kind
     val use : kind
@@ -47,8 +47,10 @@ sig
   end
 
   module LocMap : BatMap.S with type key = Loc.t
+
   type t
   type info = Info.t
+
   val empty : t
   val add_node : BasicDom.Node.t -> Info.t -> t -> t
   val add_proc : BasicDom.Proc.t -> Info.t -> t -> t
@@ -61,7 +63,10 @@ sig
   val add_total_abslocs : PowLoc.t -> t -> t
   val fold : (BasicDom.Node.t -> Info.t -> 'a -> 'a) -> t -> 'a -> 'a
   val fold_proc : (BasicDom.Proc.t -> Info.t -> 'a -> 'a) -> t -> 'a -> 'a
-  val fold_proc_local : (BasicDom.Proc.t -> PowLoc.t -> 'a -> 'a) -> t -> 'a -> 'a
+
+  val fold_proc_local :
+    (BasicDom.Proc.t -> PowLoc.t -> 'a -> 'a) -> t -> 'a -> 'a
+
   val total_abslocs : t -> PowLoc.t
   val find_node : BasicDom.Node.t -> t -> Info.t
   val find_proc : Proc.t -> t -> Info.t
@@ -75,127 +80,89 @@ sig
   val restrict_access : t -> PowLoc.t -> t
 end
 
-module Make(Dom: MapDom.CPO) =
-struct
+module Make (Dom : MapDom.CPO) = struct
   module PowLoc = Dom.PowA
   module Loc = Dom.A
 
-  module Info =
-  struct
+  module Info = struct
     type kind = DEF | USE | ALL
-    type t = {
-      def    : PowLoc.t;
-      use    : PowLoc.t
-    }
+    type t = { def : PowLoc.t; use : PowLoc.t }
+
     let def = DEF
     let use = USE
     let all = ALL
-    let empty = {
-      def    = PowLoc.empty;
-      use    = PowLoc.empty
-    }
+    let empty = { def = PowLoc.empty; use = PowLoc.empty }
 
-    let add : kind -> Loc.t -> t -> t
-    = fun m a info ->
+    let add : kind -> Loc.t -> t -> t =
+     fun m a info ->
       match m with
       | USE -> { info with use = PowLoc.add a info.use }
       | DEF -> { info with def = PowLoc.add a info.def }
-      | ALL -> { use = PowLoc.add a info.use;
-                 def = PowLoc.add a info.def }
+      | ALL -> { use = PowLoc.add a info.use; def = PowLoc.add a info.def }
 
-    let singleton : kind -> Loc.t -> t
-    = fun m a -> add m a empty
+    let singleton : kind -> Loc.t -> t = fun m a -> add m a empty
 
-    let mem : Loc.t -> t -> bool
-    = fun l a ->
-      (PowLoc.mem l a.def) || (PowLoc.mem l a.use)
+    let mem : Loc.t -> t -> bool =
+     fun l a -> PowLoc.mem l a.def || PowLoc.mem l a.use
 
-    let remove : Loc.t -> t -> t
-    = fun a info ->
-      {
-        use = PowLoc.remove a info.use;
-        def = PowLoc.remove a info.def;
-      }
+    let remove : Loc.t -> t -> t =
+     fun a info ->
+      { use = PowLoc.remove a info.use; def = PowLoc.remove a info.def }
 
-    let remove_set : PowLoc.t -> t -> t
-    = fun addrs info ->
-      {
-        use = PowLoc.diff info.use addrs;
-        def = PowLoc.diff info.def addrs;
-      }
+    let remove_set : PowLoc.t -> t -> t =
+     fun addrs info ->
+      { use = PowLoc.diff info.use addrs; def = PowLoc.diff info.def addrs }
 
-    let add_set : kind -> PowLoc.t -> t -> t
-    = fun m aset info ->
+    let add_set : kind -> PowLoc.t -> t -> t =
+     fun m aset info ->
       match m with
       | USE -> { info with use = PowLoc.union info.use aset }
       | DEF -> { info with def = PowLoc.union info.def aset }
-      | ALL -> { use = PowLoc.union info.use aset ;
-                 def = PowLoc.union info.def aset }
+      | ALL ->
+          { use = PowLoc.union info.use aset; def = PowLoc.union info.def aset }
 
-    let from_set : kind -> PowLoc.t -> t
-    = fun m aset -> add_set m aset empty
+    let from_set : kind -> PowLoc.t -> t = fun m aset -> add_set m aset empty
 
-    let add_list : kind -> Loc.t list -> t -> t
-    = fun m alist info -> list_fold (add m) alist info
+    let add_list : kind -> Loc.t list -> t -> t =
+     fun m alist info -> list_fold (add m) alist info
 
-    let accessof : t -> PowLoc.t
-    = fun l -> PowLoc.union l.def l.use
+    let accessof : t -> PowLoc.t = fun l -> PowLoc.union l.def l.use
+    let useof : t -> PowLoc.t = fun l -> l.use
+    let defof : t -> PowLoc.t = fun l -> l.def
 
-    let useof : t -> PowLoc.t
-    = fun l -> l.use
+    let union : t -> t -> t =
+     fun l1 l2 ->
+      { use = PowLoc.union l1.use l2.use; def = PowLoc.union l1.def l2.def }
 
-    let defof : t -> PowLoc.t
-    = fun l -> l.def
+    let diff : t -> t -> PowLoc.t =
+     fun l1 l2 -> PowLoc.diff (accessof l1) (accessof l2)
 
-    let union : t -> t -> t
-    = fun l1 l2 ->
-      {
-        use = PowLoc.union l1.use l2.use;
-        def = PowLoc.union l1.def l2.def
-      }
+    let restrict : PowLoc.t -> t -> t =
+     fun addrs l ->
+      { use = PowLoc.inter l.use addrs; def = PowLoc.inter l.def addrs }
 
-    let diff : t -> t -> PowLoc.t
-    = fun l1 l2 ->
-      PowLoc.diff (accessof l1) (accessof l2)
+    let filter_out : PowLoc.t -> t -> t =
+     fun addrs l ->
+      { use = PowLoc.diff l.use addrs; def = PowLoc.diff l.def addrs }
 
-    let restrict : PowLoc.t -> t -> t
-    = fun addrs l ->
-      {
-        use = PowLoc.inter l.use addrs;
-        def = PowLoc.inter l.def addrs
-      }
+    let cardinal : t -> int = fun l -> PowLoc.cardinal (accessof l)
+    let to_string_use : t -> string = fun l -> "Use = " ^ PowLoc.to_string l.use
+    let to_string_def : t -> string = fun l -> "Def = " ^ PowLoc.to_string l.def
 
-    let filter_out : PowLoc.t -> t -> t
-    = fun addrs l ->
-      {
-        use = PowLoc.diff l.use addrs;
-        def = PowLoc.diff l.def addrs
-      }
+    let to_string : t -> string =
+     fun l -> to_string_use l ^ "\n" ^ to_string_def l
 
-    let cardinal : t -> int
-    = fun l -> PowLoc.cardinal (accessof l)
-
-    let to_string_use : t -> string
-    = fun l -> "Use = " ^ PowLoc.to_string l.use
-
-    let to_string_def : t -> string
-    = fun l -> "Def = " ^ PowLoc.to_string l.def
-
-    let to_string : t -> string = fun l -> to_string_use l ^ "\n" ^ to_string_def l
-
-    let print : t -> unit
-    = fun l -> prerr_string (to_string l)
-
-    let print_use : t -> unit
-    = fun l -> prerr_endline (to_string_use l)
-
-    let print_def : t -> unit
-    = fun l -> prerr_endline (to_string_def l)
+    let print : t -> unit = fun l -> prerr_string (to_string l)
+    let print_use : t -> unit = fun l -> prerr_endline (to_string_use l)
+    let print_def : t -> unit = fun l -> prerr_endline (to_string_def l)
   end
-  module ProcMap = BatMap.Make(Proc)
-  module NodeMap = BatMap.Make(Node)
-  module LocMap = BatMap.Make(Loc)
+
+  module ProcMap = BatMap.Make (Proc)
+  module NodeMap = BatMap.Make (Node)
+  module LocMap = BatMap.Make (Loc)
+
   type info = Info.t
+
   type t = {
     total_abslocs : PowLoc.t;
     access : info NodeMap.t;
@@ -205,78 +172,97 @@ struct
     access_proc_local : PowLoc.t ProcMap.t;
     access_program_local : PowLoc.t;
     def_nodes : PowNode.t LocMap.t;
-    use_nodes : PowNode.t LocMap.t
+    use_nodes : PowNode.t LocMap.t;
   }
 
-  let empty = {
-    total_abslocs = PowLoc.empty;
-    access = NodeMap.empty;
-    access_proc = ProcMap.empty;
-    access_proc_reach = ProcMap.empty;
-    access_proc_reach_wo_local = ProcMap.empty;
-    access_proc_local = ProcMap.empty;
-    access_program_local = PowLoc.empty;
-    def_nodes = LocMap.empty;
-    use_nodes = LocMap.empty
-  }
+  let empty =
+    {
+      total_abslocs = PowLoc.empty;
+      access = NodeMap.empty;
+      access_proc = ProcMap.empty;
+      access_proc_reach = ProcMap.empty;
+      access_proc_reach_wo_local = ProcMap.empty;
+      access_proc_local = ProcMap.empty;
+      access_program_local = PowLoc.empty;
+      def_nodes = LocMap.empty;
+      use_nodes = LocMap.empty;
+    }
 
-  let total_abslocs : t -> PowLoc.t
-  =fun t -> t.total_abslocs
+  let total_abslocs : t -> PowLoc.t = fun t -> t.total_abslocs
 
-  let find_node : Node.t -> t -> info
-  =fun n t -> try NodeMap.find n t.access with _ -> Info.empty
+  let find_node : Node.t -> t -> info =
+   fun n t -> try NodeMap.find n t.access with _ -> Info.empty
 
-  let find_proc : Proc.t -> t -> info
-  =fun pid t -> try ProcMap.find pid t.access_proc with _ -> Info.empty
+  let find_proc : Proc.t -> t -> info =
+   fun pid t -> try ProcMap.find pid t.access_proc with _ -> Info.empty
 
   (* abstract locations exclusively accessed in the given function *)
-  let find_proc_local : Proc.t -> t -> PowLoc.t
-  =fun pid t -> try ProcMap.find pid t.access_proc_local with _ -> PowLoc.empty
+  let find_proc_local : Proc.t -> t -> PowLoc.t =
+   fun pid t ->
+    try ProcMap.find pid t.access_proc_local with _ -> PowLoc.empty
 
-  let find_program_local : t -> PowLoc.t
-  =fun t -> t.access_program_local
+  let find_program_local : t -> PowLoc.t = fun t -> t.access_program_local
 
-  let find_proc_reach : Proc.t -> t -> info
-  =fun pid t -> try ProcMap.find pid t.access_proc_reach with _ -> Info.empty
+  let find_proc_reach : Proc.t -> t -> info =
+   fun pid t -> try ProcMap.find pid t.access_proc_reach with _ -> Info.empty
 
-  let find_proc_reach_wo_local : Proc.t -> t -> info
-  =fun pid t -> try ProcMap.find pid t.access_proc_reach_wo_local with _ -> Info.empty
+  let find_proc_reach_wo_local : Proc.t -> t -> info =
+   fun pid t ->
+    try ProcMap.find pid t.access_proc_reach_wo_local with _ -> Info.empty
 
-  let find_def_nodes : Loc.t -> t -> PowNode.t
-  =fun x t -> try LocMap.find x t.def_nodes with _ -> PowNode.empty
+  let find_def_nodes : Loc.t -> t -> PowNode.t =
+   fun x t -> try LocMap.find x t.def_nodes with _ -> PowNode.empty
 
-  let find_use_nodes : Loc.t -> t -> PowNode.t
-  =fun x t -> try LocMap.find x t.use_nodes with _ -> PowNode.empty
+  let find_use_nodes : Loc.t -> t -> PowNode.t =
+   fun x t -> try LocMap.find x t.use_nodes with _ -> PowNode.empty
 
-  let find_single_defs : t -> PowLoc.t
-  =fun t ->
-    LocMap.fold (fun loc nodes ->
-      if PowNode.cardinal nodes = 1 then PowLoc.add loc else id
-    ) t.def_nodes PowLoc.empty
+  let find_single_defs : t -> PowLoc.t =
+   fun t ->
+    LocMap.fold
+      (fun loc nodes ->
+        if PowNode.cardinal nodes = 1 then PowLoc.add loc else id)
+      t.def_nodes PowLoc.empty
 
-  let restrict_access : t -> PowLoc.t -> t
-  =fun t locs ->
-    { t with access =
-        NodeMap.fold (fun node access ->
-          NodeMap.add node (Info.restrict locs access)
-        ) t.access NodeMap.empty }
+  let restrict_access : t -> PowLoc.t -> t =
+   fun t locs ->
+    {
+      t with
+      access =
+        NodeMap.fold
+          (fun node access -> NodeMap.add node (Info.restrict locs access))
+          t.access NodeMap.empty;
+    }
 
   let add_node node info access =
     { access with access = NodeMap.add node info access.access }
 
   let add_proc pid info access =
-    { access with access_proc = ProcMap.modify_def Info.empty pid
-      (Info.union info) access.access_proc }
+    {
+      access with
+      access_proc =
+        ProcMap.modify_def Info.empty pid (Info.union info) access.access_proc;
+    }
 
   let add_proc_reach pid info access =
-    { access with access_proc_reach = ProcMap.add pid info access.access_proc_reach }
+    {
+      access with
+      access_proc_reach = ProcMap.add pid info access.access_proc_reach;
+    }
 
   let add_proc_reach_wo_local pid info access =
-    { access with access_proc_reach_wo_local = ProcMap.add pid info access.access_proc_reach_wo_local }
+    {
+      access with
+      access_proc_reach_wo_local =
+        ProcMap.add pid info access.access_proc_reach_wo_local;
+    }
 
   let add_proc_local pid loc access =
-    { access with access_proc_local = ProcMap.modify_def PowLoc.empty pid
-      (PowLoc.add loc) access.access_proc_local }
+    {
+      access with
+      access_proc_local =
+        ProcMap.modify_def PowLoc.empty pid (PowLoc.add loc)
+          access.access_proc_local;
+    }
 
   let add_program_local access_program_local access =
     { access with access_program_local }

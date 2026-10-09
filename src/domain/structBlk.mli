@@ -8,10 +8,12 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Struct domain *)
 module Struct : AbsDom.SET with type t = string
+(** Struct domain *)
+
 module PowStruct : PowDom.CPO with type elt = Struct.t
 include MapDom.LAT with type A.t = BasicDom.Loc.t and type B.t = PowStruct.t
+
 val make : BasicDom.PowLoc.t -> Cil.compinfo -> t
 val extern : unit -> t
 val append_field : t -> Cil.fieldinfo -> BasicDom.PowLoc.t

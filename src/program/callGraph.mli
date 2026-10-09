@@ -10,21 +10,17 @@
 (***********************************************************************)
 (** Call-graph *)
 
-(** Abstract type of call graph *)
 type t
+(** Abstract type of call graph *)
 
 val empty : t
-
 val callees : InterCfg.pid -> t -> BasicDom.PowProc.t
 val trans_callees : InterCfg.pid -> t -> BasicDom.PowProc.t
-
 val add_edge : InterCfg.pid -> InterCfg.pid -> t -> t
 val remove_function : InterCfg.pid -> t -> t
-
 val is_rec : t -> InterCfg.pid -> bool
-
 val compute_trans_calls : t -> t
 
-(** {2 Print } *)
+(** {2 Print} *)
 
 val to_json : t -> Yojson.Safe.t

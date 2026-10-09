@@ -9,4 +9,8 @@
 (*                                                                     *)
 (***********************************************************************)
 (** Abstract semantics of octagon impact analysis *)
-include AbsSem.S with type Dom.t = OctImpactDom.Mem.t and type Dom.A.t = OctDom.Pack.t and type Dom.PowA.t = OctDom.PackConf.t
+include
+  AbsSem.S
+    with type Dom.t = OctImpactDom.Mem.t
+     and type Dom.A.t = OctDom.Pack.t
+     and type Dom.PowA.t = OctDom.PackConf.t

@@ -8,5 +8,5 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Visualizer *)
 val main : unit -> unit
+(** Visualizer *)

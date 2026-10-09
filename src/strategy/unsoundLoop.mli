@@ -11,6 +11,7 @@
 type loop = string
 type feature
 type data = (loop, feature) BatMap.t
+
 val extract_feature : Global.t -> data
 val transform : Global.t -> bool
 val print_feature : data -> unit

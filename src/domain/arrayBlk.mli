@@ -9,15 +9,15 @@
 (*                                                                     *)
 (***********************************************************************)
 (** Array domain *)
-module ArrInfo :
-sig
+module ArrInfo : sig
   type t = {
-    offset    : Itv.t;
-    size      : Itv.t;
-    stride    : Itv.t;
-    null_pos  : Itv.t;
+    offset : Itv.t;
+    size : Itv.t;
+    stride : Itv.t;
+    null_pos : Itv.t;
     structure : StructBlk.PowStruct.t;
   }
+
   val top : t
   val input : t
 end
@@ -25,7 +25,6 @@ end
 include MapDom.LAT with type A.t = BasicDom.Allocsite.t and type B.t = ArrInfo.t
 
 val make : BasicDom.Allocsite.t -> Itv.t -> Itv.t -> Itv.t -> Itv.t -> t
-
 val offsetof : t -> Itv.t
 val sizeof : t -> Itv.t
 val nullof : t -> Itv.t

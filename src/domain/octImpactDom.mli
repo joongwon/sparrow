@@ -12,8 +12,9 @@
 
 module AbsOct : sig
   include AbsDom.LAT
+
   val top : t
-  val is_defined :  OctDom.OctLoc.t -> t -> bool
+  val is_defined : OctDom.OctLoc.t -> t -> bool
   val set_const : OctDom.OctLoc.t -> t -> t
   val weak_set_const : OctDom.OctLoc.t -> t -> t
   val set_variable : OctDom.OctLoc.t -> OctDom.OctLoc.t -> t -> t
@@ -26,13 +27,18 @@ end
 
 module Mem : sig
   include InstrumentedMem.S
+
   val init : OctDom.PackConf.t -> t
   val top : OctDom.PackConf.t -> t
   val lookup : t -> AbsOct.t
-end with type A.t = OctDom.Pack.t and type B.t = AbsOct.t and type PowA.t = OctDom.PackConf.t
+end
+with type A.t = OctDom.Pack.t
+ and type B.t = AbsOct.t
+ and type PowA.t = OctDom.PackConf.t
 
 module Relation : sig
   type t
+
   val empty : t
   val add_edge : OctDom.OctLoc.t -> OctDom.OctLoc.t -> t -> t
   val add_absoct : AbsOct.t -> t -> t

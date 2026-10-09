@@ -8,8 +8,9 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Profiler *)
 val record_calling_frequency : bool
+(** Profiler *)
+
 val record_max_time : bool
 val events : (string, float) BatMap.t Stdlib.ref
 val log : (string, float Stdlib.ref) BatMap.t Stdlib.ref
