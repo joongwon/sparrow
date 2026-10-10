@@ -1,6 +1,15 @@
 (executable
  (name test)
+ (modules test)
  (libraries sparrow_lib unix str))
+
+(test
+ (name oct_constants)
+ (modules oct_constants)
+ (libraries unix str)
+ (deps oct_constants.c)
+ (action
+  (run %{test} %{exe:../src/main.exe} %{dep:oct_constants.c})))
 
 (rule
  (alias runtest)

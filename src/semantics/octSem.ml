@@ -74,7 +74,10 @@ let octloc_to_texpr : OctLoc.t -> Texpr1.expr =
  fun l -> Texpr1.Var (Apron.Var.of_string (OctLoc.to_string l))
 
 let const_to_texpr : Cil.constant -> Texpr1.expr = function
-  | Cil.CInt (i, _, _) -> Texpr1.Cst (Coeff.s_of_int (Cilint.int_of_cilint i))
+  | Cil.CInt (i, _, _) ->
+      (* C integers can exceed the range of an OCaml machine integer. *)
+      Texpr1.Cst
+        (Coeff.s_of_mpqf (Mpqf.of_string (Cilint.string_of_cilint i)))
   | Cil.CStr (s, _) -> invalid_arg ("octSem.ml: const_to_texpr string " ^ s)
   | Cil.CWStr (s, _) -> invalid_arg "octSem.ml: const_to_texpr wide string"
   | Cil.CChr c -> Texpr1.Cst (Coeff.s_of_int (int_of_char c))
