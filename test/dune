@@ -20,3 +20,11 @@
  (name oct_marshal)
  (modules oct_marshal)
  (libraries sparrow_lib unix))
+
+(test
+ (name vis_report)
+ (modules vis_report)
+ (libraries sparrow_lib unix str)
+ (deps vis_report.c)
+ (action
+  (run %{test} %{dep:vis_report.c})))
