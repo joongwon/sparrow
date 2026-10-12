@@ -1,4 +1,5 @@
 open GoblintCil
+
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -140,6 +141,30 @@ module Octagon = struct
   let man = Oct.manager_alloc ()
   let compare = compare
   let bot = Bot
+
+  (* Apron environments are custom blocks without OCaml marshal support. *)
+  type serialized = (string array * string array * bytes) option
+
+  let serialize = function
+    | Bot -> None
+    | V o ->
+        let ints, reals = Environment.vars (Abstract1.env o) in
+        Some
+          ( Array.map Var.to_string ints,
+            Array.map Var.to_string reals,
+            Marshal.to_bytes (Abstract1.abstract0 o) [] )
+
+  let deserialize = function
+    | None -> Bot
+    | Some (ints, reals, data) ->
+        let env =
+          Environment.make
+            (Array.map Var.of_string ints)
+            (Array.map Var.of_string reals)
+        in
+        Manager.set_deserialize man;
+        let abstract0 : Oct.t Abstract0.t = Marshal.from_bytes data 0 in
+        V { Abstract1.abstract0; env }
 
   let top pack =
     let l = Pack.fold (fun x l -> OctLoc.to_string x :: l) pack [] in

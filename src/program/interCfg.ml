@@ -1,4 +1,3 @@
-open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -9,6 +8,8 @@ open GoblintCil
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
+
+open GoblintCil
 (** Inter-procedural CFG *)
 
 open Vocab
@@ -236,7 +237,17 @@ let replace_salloc : t -> (string, lval) BatMap.t -> t =
       | _ -> g)
     nodes icfg
 
-let dummy_location = { line = 0; file = ""; byte = 0; column = 0; endLine = 0; endByte = 0; endColumn = 0; synthetic = true }
+let dummy_location =
+  {
+    line = 0;
+    file = "";
+    byte = 0;
+    column = 0;
+    endLine = 0;
+    endByte = 0;
+    endColumn = 0;
+    synthetic = true;
+  }
 
 let insert_salloc : t -> (string, lval) BatMap.t -> t =
  fun icfg strmap ->

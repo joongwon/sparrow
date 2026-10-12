@@ -49,6 +49,10 @@ with type t = PowDom.MakeCPO(Pack).t
 module Octagon : sig
   include AbsDom.CPO
 
+  type serialized
+
+  val serialize : t -> serialized
+  val deserialize : serialized -> t
   val top : Pack.t -> t
   val is_bot : t -> bool
   val itv_of_var : OctLoc.t -> t -> Itv.t

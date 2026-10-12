@@ -1,4 +1,5 @@
 open GoblintCil
+
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -76,8 +77,7 @@ let octloc_to_texpr : OctLoc.t -> Texpr1.expr =
 let const_to_texpr : Cil.constant -> Texpr1.expr = function
   | Cil.CInt (i, _, _) ->
       (* C integers can exceed the range of an OCaml machine integer. *)
-      Texpr1.Cst
-        (Coeff.s_of_mpqf (Mpqf.of_string (Cilint.string_of_cilint i)))
+      Texpr1.Cst (Coeff.s_of_mpqf (Mpqf.of_string (Cilint.string_of_cilint i)))
   | Cil.CStr (s, _) -> invalid_arg ("octSem.ml: const_to_texpr string " ^ s)
   | Cil.CWStr (s, _) -> invalid_arg "octSem.ml: const_to_texpr wide string"
   | Cil.CChr c -> Texpr1.Cst (Coeff.s_of_int (int_of_char c))

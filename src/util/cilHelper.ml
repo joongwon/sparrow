@@ -1,4 +1,5 @@
 open GoblintCil
+
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -75,7 +76,8 @@ and s_instr : instr -> string =
   | Set (lv, exp, _, _) -> "Set(" ^ s_lv lv ^ "," ^ s_exp exp ^ ")"
   | Call (Some lv, fexp, params, _, _) ->
       s_lv lv ^ ":= Call(" ^ s_exp fexp ^ s_exps params ^ ")"
-  | Call (None, fexp, params, _, _) -> "Call(" ^ s_exp fexp ^ s_exps params ^ ")"
+  | Call (None, fexp, params, _, _) ->
+      "Call(" ^ s_exp fexp ^ s_exps params ^ ")"
   | Asm _ -> "Asm"
   | VarDecl _ -> invalid_arg "CIL VarDecl instructions are not supported"
 

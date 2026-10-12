@@ -1,4 +1,5 @@
 open GoblintCil
+
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -591,7 +592,8 @@ let model_getpwent mode spec node pid lvo f (mem, global) =
 
 let rec model_strcpy mode spec node pid es (mem, global) =
   match es with
-  | CastE (_, _, e) :: t -> model_strcpy mode spec node pid (e :: t) (mem, global)
+  | CastE (_, _, e) :: t ->
+      model_strcpy mode spec node pid (e :: t) (mem, global)
   | [ dst; CastE (_, _, e) ] ->
       model_strcpy mode spec node pid [ dst; e ] (mem, global)
   | [ Lval dst; Lval src ]
@@ -610,7 +612,8 @@ let rec model_strcpy mode spec node pid es (mem, global) =
 
 let rec model_strncpy mode spec node pid es (mem, global) =
   match es with
-  | CastE (_, _, e) :: t -> model_strncpy mode spec node pid (e :: t) (mem, global)
+  | CastE (_, _, e) :: t ->
+      model_strncpy mode spec node pid (e :: t) (mem, global)
   | Lval dst :: _ :: size :: _ | StartOf dst :: _ :: size :: _ ->
       let arr = Val.array_of_val (lookup (eval_lv ~spec pid dst mem) mem) in
       let sz = Val.itv_of_val (eval ~spec pid size mem) in
@@ -624,7 +627,8 @@ let rec model_strncpy mode spec node pid es (mem, global) =
 
 let rec model_strcat mode spec node pid es (mem, global) =
   match es with
-  | CastE (_, _, e) :: t -> model_strcat mode spec node pid (e :: t) (mem, global)
+  | CastE (_, _, e) :: t ->
+      model_strcat mode spec node pid (e :: t) (mem, global)
   | [ dst; CastE (_, _, e) ] ->
       model_strcat mode spec node pid [ dst; e ] (mem, global)
   | [ Lval dst; Lval src ]

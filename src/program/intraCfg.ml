@@ -1,4 +1,3 @@
-open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -9,6 +8,8 @@ open GoblintCil
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
+
+open GoblintCil
 (** CFG for a Function. *)
 
 open Vocab
@@ -466,9 +467,10 @@ let rec make_nested_array :
         let cast_node = Node.make () in
         let cast_cmd =
           Cmd.Cset
-            (element,
-             Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp) ~newt:(TPtr (t, [])),
-             loc)
+            ( element,
+              Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp)
+                ~newt:(TPtr (t, [])),
+              loc )
         in
         let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
         make_nested_array fd element t size loc cast_node initialize g
@@ -509,7 +511,8 @@ and generate_allocs_field :
           let cast_cmd =
             Cmd.Cset
               ( field,
-                Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp) ~newt:(Cil.TPtr (typ, [])),
+                Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp)
+                  ~newt:(Cil.TPtr (typ, [])),
                 fieldinfo.floc )
           in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
@@ -545,7 +548,8 @@ let rec generate_allocs :
           let cast_cmd =
             Cmd.Cset
               ( lv,
-                Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp) ~newt:(Cil.TPtr (unrollTypeDeep typ, [])),
+                Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp)
+                  ~newt:(Cil.TPtr (unrollTypeDeep typ, [])),
                 varinfo.vdecl )
           in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
@@ -731,10 +735,10 @@ let transform_allocs : Cil.fundec -> t -> t =
             let cast_node = Node.make () in
             let cast_cmd =
               Cmd.Cset
-                (lv,
-                 Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval lv)
-                   ~newt:(Cil.TPtr (typ, [])),
-                 loc)
+                ( lv,
+                  Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval lv)
+                    ~newt:(Cil.TPtr (typ, [])),
+                  loc )
             in
             g
             |> add_cmd node (Cmd.Calloc (lv, Cmd.Array exp, false, loc))
@@ -836,10 +840,10 @@ let rec process_gvardecl :
       let cast_node = Node.make () in
       let cast_cmd =
         Cmd.Cset
-          (lv,
-           Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp)
-             ~newt:(Cil.TPtr (typ, [])),
-           loc)
+          ( lv,
+            Cil.mkCast ~kind:Cil.Explicit ~e:(Cil.Lval tmp)
+              ~newt:(Cil.TPtr (typ, [])),
+            loc )
       in
       let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
       let term, g = make_nested_array fd lv typ exp loc cast_node true g in

@@ -1,4 +1,5 @@
 open GoblintCil
+
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -79,7 +80,8 @@ let rec set :
     | BinOp (bop, Const (CInt (i, _, _)), Lval lval, _)
     (* heuristic: forget the relationship only if x = x + 1 *)
       when (bop = PlusA && Cilint.compare_cilint i Cilint.one_cilint = 0)
-           || (bop = MinusA && Cilint.compare_cilint i Cilint.mone_cilint = 0) ->
+           || (bop = MinusA && Cilint.compare_cilint i Cilint.mone_cilint = 0)
+      ->
         ItvSem.eval_lv pid lval ptrmem |> PowOctLoc.of_locs |> fun rv_set ->
         if PowOctLoc.meet lv_set rv_set |> PowOctLoc.is_empty then
           set mode global ptrmem pid lv_set (Lval lval) mem

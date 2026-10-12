@@ -99,7 +99,11 @@ class copyBodyVisitor (host : fundec) (* The host of the
           | Switch (e, body, cases, l, sloc) ->
               s.skind <-
                 Switch
-                  (e, body, Util.list_map (fun cs -> findStmt cs.sid) cases, l, sloc)
+                  ( e,
+                    body,
+                    Util.list_map (fun cs -> findStmt cs.sid) cases,
+                    l,
+                    sloc )
           | _ -> ()
         in
         List.iter patchstmt !patches;
@@ -216,7 +220,8 @@ let replaceStatement (host : fundec) (* The host *)
       let rec loop (rest : instr list) (* Remaining instructions *) : unit =
         match rest with
         | [] -> (* Done *) ()
-        | (Call (lvo, Lval (Var fvi, NoOffset), args, l, _) as i) :: resti -> begin
+        | (Call (lvo, Lval (Var fvi, NoOffset), args, l, _) as i) :: resti ->
+          begin
             if debug then E.log "Checking whether to inline %s\n" fvi.vname;
             let replo : fundec option =
               match inlineWhat fvi with
@@ -292,7 +297,8 @@ let replaceStatement (host : fundec) (* The host *)
                           let rv =
                             makeTempVar host ~name:("ret_" ^ repl.svar.vname) rt
                           in
-                          (mkStmtOneInstr (Set (lv, Lval (var rv), l, l)), Some rv)
+                          ( mkStmtOneInstr (Set (lv, Lval (var rv), l, l)),
+                            Some rv )
                       end
                 in
                 ret.labels <-

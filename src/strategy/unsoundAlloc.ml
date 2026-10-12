@@ -28,7 +28,9 @@ let rec is_alloc_ptr stmt p =
       match pred.skind with
       | Instr [ Set ((Var v, NoOffset), Lval (Var tmp, NoOffset), _, _) ]
       | Instr
-          [ Set ((Var v, NoOffset), CastE (_, _, Lval (Var tmp, NoOffset)), _, _) ]
+          [
+            Set ((Var v, NoOffset), CastE (_, _, Lval (Var tmp, NoOffset)), _, _);
+          ]
         when p = v.vname ->
           is_alloc_ptr pred tmp.vname
       | Instr instr -> is_alloc_ptr_instr instr p

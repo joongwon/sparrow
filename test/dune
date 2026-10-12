@@ -15,3 +15,8 @@
  (alias runtest)
  (action
   (run ./test.exe %{exe:../src/main.exe})))
+
+(test
+ (name oct_marshal)
+ (modules oct_marshal)
+ (libraries sparrow_lib unix))

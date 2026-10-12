@@ -7,8 +7,8 @@
  (libraries batteries findlib findlib.internal findlib.dynload dynlink
    goblint-cil goblint-cil.all-features goblint-cil.dataslicing
    goblint-cil.liveness goblint-cil.makecfg goblint-cil.pta
-   goblint-cil.syntacticsearch goblint-cil.zrapp gmp
-   apron apron.octMPQ ocamlgraph yojson pyml threads str unix num)
+   goblint-cil.syntacticsearch goblint-cil.zrapp gmp apron apron.octMPQ
+   ocamlgraph yojson pyml threads str unix num)
  (preprocess
   (pps ppx_compare ppx_deriving.std))
  (flags

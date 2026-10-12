@@ -1,4 +1,5 @@
 open GoblintCil
+
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -266,20 +267,46 @@ let manual_packing : Global.t * ItvDom.Table.t -> PackConf.t =
  * Marshaling *
  * ********** *)
 
+let serialize_table table =
+  Table.fold
+    (fun node mem nodes ->
+      let bindings =
+        Mem.fold
+          (fun pack oct bindings -> (pack, Octagon.serialize oct) :: bindings)
+          mem []
+      in
+      (node, bindings) :: nodes)
+    table []
+
+let deserialize_table nodes =
+  List.fold_left
+    (fun table (node, bindings) ->
+      let mem =
+        List.fold_left
+          (fun mem (pack, oct) -> Mem.add pack (Octagon.deserialize oct) mem)
+          Mem.bot bindings
+      in
+      Table.add node mem table)
+    Table.bot nodes
+
 let marshal_in : Global.t -> Global.t * Table.t * Table.t =
  fun global ->
   let filename = Filename.basename global.file.fileName in
   let global = MarshalManager.input (filename ^ ".oct.global") in
-  let input = MarshalManager.input (filename ^ ".oct.input") in
-  let output = MarshalManager.input (filename ^ ".oct.output") in
+  let input =
+    MarshalManager.input (filename ^ ".oct.input") |> deserialize_table
+  in
+  let output =
+    MarshalManager.input (filename ^ ".oct.output") |> deserialize_table
+  in
   (global, input, output)
 
 let marshal_out : Global.t * Table.t * Table.t -> Global.t * Table.t * Table.t =
  fun (global, input, output) ->
   let filename = Filename.basename global.file.fileName in
   MarshalManager.output (filename ^ ".oct.global") global;
-  MarshalManager.output (filename ^ ".oct.input") input;
-  MarshalManager.output (filename ^ ".oct.output") output;
+  MarshalManager.output (filename ^ ".oct.input") (serialize_table input);
+  MarshalManager.output (filename ^ ".oct.output") (serialize_table output);
   (global, input, output)
 
 let do_analysis :

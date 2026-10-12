@@ -1,4 +1,3 @@
-open GoblintCil
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -9,6 +8,8 @@ open GoblintCil
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
+
+open GoblintCil
 (** Abstract Domain *)
 
 open Vocab

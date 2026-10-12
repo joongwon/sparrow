@@ -4,7 +4,8 @@ let () =
   let fd = Unix.openfile output [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
   let pid =
     Unix.create_process analyzer
-      [| analyzer; "-oct"; Sys.argv.(2) |] Unix.stdin fd fd
+      [| analyzer; "-oct"; Sys.argv.(2) |]
+      Unix.stdin fd fd
   in
   Unix.close fd;
   let _, status = Unix.waitpid [] pid in

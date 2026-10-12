@@ -1,4 +1,5 @@
 open GoblintCil
+
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -808,8 +809,8 @@ class loopRemoveVisitor (loops : string BatSet.t) =
 
     method vstmt (s : Cil.stmt) =
       match s.skind with
-      | Loop (blk, loc, _, _, _) when BatSet.mem (CilHelper.s_location loc) loops
-        ->
+      | Loop (blk, loc, _, _, _)
+        when BatSet.mem (CilHelper.s_location loc) loops ->
           Cil.ChangeDoChildrenPost (Cil.mkStmt (Cil.Block blk), id)
       | _ -> Cil.DoChildren
   end
