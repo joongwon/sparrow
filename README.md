@@ -32,6 +32,10 @@ and filters functions. Each function page contains a Graphviz CFG:
 - Filter state text by variable/location, zoom the graph, or download its DOT
   and SVG. Selected nodes have bookmarkable URL fragments.
 
+State displays omit trivial function self-bindings such as
+`f -> (bot, bot, bot, bot, {f})`, with a count of omitted bindings. Aliases,
+multiple callees, and values with additional abstract information remain visible.
+
 Use `--analysis oct` for octagon snapshots, `--output DIR` to choose a new output
 directory, or `--dot PATH` to select Graphviz. The default prefix is `merged`;
 otherwise use the basename preceding `.itv.global` / `.oct.global`. An existing

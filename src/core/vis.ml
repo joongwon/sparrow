@@ -16,14 +16,27 @@ let prefix = ref "merged"
 let analysis = ref "itv"
 let output_dir = ref ""
 let dot = ref "dot"
-let opts = [
-  ("--marshal-dir", Arg.Set_string marshal_dir, "DIR Read saved analysis snapshots");
-  ("--prefix", Arg.Set_string prefix, "NAME Snapshot basename (default: merged)");
-  ("--analysis", Arg.Symbol (["itv"; "oct"], fun s -> analysis := s), "DOMAIN Saved analysis (default: itv)");
-  ("--output", Arg.Set_string output_dir, "DIR New report directory");
-  ("--dot", Arg.Set_string dot, "PATH Graphviz dot executable (default: dot)");
-]
-let usage = "sparrow-vis FILE.json\n       sparrow-vis --marshal-dir DIR [--prefix merged] [--analysis itv|oct] [--output DIR]"
+
+let opts =
+  [
+    ( "--marshal-dir",
+      Arg.Set_string marshal_dir,
+      "DIR Read saved analysis snapshots" );
+    ( "--prefix",
+      Arg.Set_string prefix,
+      "NAME Snapshot basename (default: merged)" );
+    ( "--analysis",
+      Arg.Symbol ([ "itv"; "oct" ], fun s -> analysis := s),
+      "DOMAIN Saved analysis (default: itv)" );
+    ("--output", Arg.Set_string output_dir, "DIR New report directory");
+    ("--dot", Arg.Set_string dot, "PATH Graphviz dot executable (default: dot)");
+  ]
+
+let usage =
+  "sparrow-vis FILE.json\n\
+  \       sparrow-vis --marshal-dir DIR [--prefix merged] [--analysis itv|oct] \
+   [--output DIR]"
+
 let file = ref ""
 
 let args f =
@@ -226,19 +239,28 @@ let dump : Json.t -> unit =
 let main () =
   Arg.parse opts args usage;
   if !marshal_dir <> "" then (
-    if !file <> "" then raise (Arg.Bad "Choose either JSON input or --marshal-dir");
-    let out = if !output_dir <> "" then !output_dir else
-      Filename.concat !marshal_dir (!prefix ^ "." ^ !analysis ^ ".vis") in
-    VisReport.generate ~dir:!marshal_dir ~prefix:!prefix ~analysis:!analysis ~out ~dot:!dot)
+    if !file <> "" then
+      raise (Arg.Bad "Choose either JSON input or --marshal-dir");
+    let out =
+      if !output_dir <> "" then !output_dir
+      else Filename.concat !marshal_dir (!prefix ^ "." ^ !analysis ^ ".vis")
+    in
+    VisReport.generate ~dir:!marshal_dir ~prefix:!prefix ~analysis:!analysis
+      ~out ~dot:!dot)
   else if !file <> "" then (
-    if !output_dir <> "" || !analysis <> "itv" || !prefix <> "merged" || !dot <> "dot" then
-      raise (Arg.Bad "Report options require --marshal-dir");
+    if
+      !output_dir <> "" || !analysis <> "itv" || !prefix <> "merged"
+      || !dot <> "dot"
+    then raise (Arg.Bad "Report options require --marshal-dir");
     dump (Json.from_file !file))
   else raise (Arg.Bad usage)
 
 let _ =
   try main () with
   | Failure message | Sys_error message | Arg.Bad message ->
-      eprintf "sparrow-vis: %s\n%!" message; exit 1
+      eprintf "sparrow-vis: %s\n%!" message;
+      exit 1
   | Unix.Unix_error (error, call, path) ->
-      eprintf "sparrow-vis: %s: %s (%s)\n%!" call (Unix.error_message error) path; exit 1
+      eprintf "sparrow-vis: %s: %s (%s)\n%!" call (Unix.error_message error)
+        path;
+      exit 1
