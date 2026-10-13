@@ -7,3 +7,6 @@ int main(void) {
   x = fp(x);
   return external_fn(x);
 }
+int (*choose(int (*callback)(int), const char *label, ...))(int) {
+  return callback;
+}

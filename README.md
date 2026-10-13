@@ -22,6 +22,9 @@ sparrow-vis --marshal-dir /path/to/analysis --prefix merged --analysis itv
 Open `/path/to/analysis/merged.itv.vis/index.html` in a browser. The index lists
 and filters functions. Each function page contains a Graphviz CFG:
 
+The page header shows the saved C function declaration, including its return
+type, parameter names and types, and variadic arguments where applicable.
+
 - Click a node's body (or select it from the Node menu) to inspect its saved
   input and output abstract states. Keyboard users can focus a node and press
   Enter or Space.

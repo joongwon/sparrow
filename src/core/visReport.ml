@@ -72,14 +72,14 @@ let run argv =
   | Unix.WEXITED 0 -> ()
   | _ -> failwith ("Command failed: " ^ String.concat " " (Array.to_list argv))
 
-let page ch title body =
+let page ?(body_class = "") ch title body =
   fprintf ch
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta \
      name=\"viewport\" \
      content=\"width=device-width,initial-scale=1\"><title>%s · \
      Sparrow</title><link rel=\"stylesheet\" href=\"style.css\"><script defer \
-     src=\"app.js\"></script></head><body>"
-    (html title);
+     src=\"app.js\"></script></head><body class=\"%s\">"
+    (html title) (html body_class);
   body ch;
   fprintf ch "</body></html>\n"
 
@@ -197,7 +197,26 @@ let inline_svg path =
   let pos = Str.search_forward (Str.regexp_string "<svg") svg 0 in
   String.sub svg pos (String.length svg - pos)
 
-let generate_function ~dot ~out ~analysis ~known ~input ~output icfg pid =
+let function_signatures file =
+  let signatures = Hashtbl.create 128 in
+  List.iter (function
+    | GoblintCil.Cil.GFun (fd, _) ->
+        let printer = new GoblintCil.Cil.defaultCilPrinterClass in
+        printer#setCurrentFormals fd.sformals;
+        let declaration = GoblintCil.Pretty.sprint ~width:100 (printer#pVDecl () fd.svar) in
+        Hashtbl.replace signatures fd.svar.vname (String.trim declaration)
+    | _ -> ()) file.GoblintCil.Cil.globals;
+  Hashtbl.replace signatures InterCfg.global_proc "Global initialization (synthetic CFG)";
+  signatures
+
+let signature_html signatures pid =
+  let signature = match Hashtbl.find_opt signatures pid with
+    | Some text -> text
+    | None -> "Signature unavailable in saved program." in
+  sprintf "<div class=\"function-heading\"><h1>%s</h1><pre class=\"function-signature\" aria-label=\"Function signature\">%s</pre></div>"
+    (html pid) (html signature)
+
+let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg pid =
   let cfg = InterCfg.cfgof icfg pid in
   let nodes =
     List.sort InterCfg.Node.compare (InterCfg.nodes_of_pid icfg pid)
@@ -277,11 +296,11 @@ let generate_function ~dot ~out ~analysis ~known ~input ~output icfg pid =
   write
     (Filename.concat out (function_file pid))
     (fun ch ->
-      page ch pid (fun ch ->
+      page ~body_class:"function-page" ch pid (fun ch ->
           fprintf ch
-            "<header><a href=\"index.html\">← Functions</a><h1>%s</h1><span \
+            "<header><a href=\"index.html\">← Functions</a>%s<span \
              class=\"badge\">%s</span><span>%d nodes</span></header>"
-            (html pid) (html analysis) (List.length nodes);
+            (signature_html signatures pid) (html analysis) (List.length nodes);
           fprintf ch
             "<div class=\"toolbar\"><p>Click a node to inspect its state. \
              Click a <a href=\"index.html\">blue function name</a> to open its \
@@ -339,6 +358,7 @@ let generate ~dir ~prefix ~analysis ~out ~dot =
   eprintf "Loading %s.global\n%!" base;
   let global : Global.t = unmarshal (base ^ ".global") in
   let icfg = global.icfg in
+  let signatures = function_signatures global.file in
   Unix.mkdir out 0o755;
   Unix.mkdir (Filename.concat out "states") 0o755;
   let load side =
@@ -358,7 +378,7 @@ let generate ~dir ~prefix ~analysis ~out ~dot =
   List.iteri
     (fun i pid ->
       eprintf "[%d/%d] Rendering %s\n%!" (i + 1) (List.length pids) pid;
-      generate_function ~dot ~out ~analysis ~known ~input ~output icfg pid)
+      generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg pid)
     pids;
   write (Filename.concat out "index.html") (fun ch ->
       page ch "Functions" (fun ch ->
