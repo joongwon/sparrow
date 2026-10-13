@@ -199,24 +199,35 @@ let inline_svg path =
 
 let function_signatures file =
   let signatures = Hashtbl.create 128 in
-  List.iter (function
-    | GoblintCil.Cil.GFun (fd, _) ->
-        let printer = new GoblintCil.Cil.defaultCilPrinterClass in
-        printer#setCurrentFormals fd.sformals;
-        let declaration = GoblintCil.Pretty.sprint ~width:100 (printer#pVDecl () fd.svar) in
-        Hashtbl.replace signatures fd.svar.vname (String.trim declaration)
-    | _ -> ()) file.GoblintCil.Cil.globals;
-  Hashtbl.replace signatures InterCfg.global_proc "Global initialization (synthetic CFG)";
+  List.iter
+    (function
+      | GoblintCil.Cil.GFun (fd, _) ->
+          let printer = new GoblintCil.Cil.defaultCilPrinterClass in
+          printer#setCurrentFormals fd.sformals;
+          let declaration =
+            GoblintCil.Pretty.sprint ~width:100 (printer#pVDecl () fd.svar)
+          in
+          Hashtbl.replace signatures fd.svar.vname (String.trim declaration)
+      | _ -> ())
+    file.GoblintCil.Cil.globals;
+  Hashtbl.replace signatures InterCfg.global_proc
+    "Global initialization (synthetic CFG)";
   signatures
 
 let signature_html signatures pid =
-  let signature = match Hashtbl.find_opt signatures pid with
+  let signature =
+    match Hashtbl.find_opt signatures pid with
     | Some text -> text
-    | None -> "Signature unavailable in saved program." in
-  sprintf "<div class=\"function-heading\"><h1>%s</h1><pre class=\"function-signature\" aria-label=\"Function signature\">%s</pre></div>"
+    | None -> "Signature unavailable in saved program."
+  in
+  sprintf
+    "<div class=\"function-heading\"><h1>%s</h1><pre \
+     class=\"function-signature\" aria-label=\"Function \
+     signature\">%s</pre></div>"
     (html pid) (html signature)
 
-let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg pid =
+let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg
+    pid =
   let cfg = InterCfg.cfgof icfg pid in
   let nodes =
     List.sort InterCfg.Node.compare (InterCfg.nodes_of_pid icfg pid)
@@ -300,7 +311,8 @@ let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg
           fprintf ch
             "<header><a href=\"index.html\">← Functions</a>%s<span \
              class=\"badge\">%s</span><span>%d nodes</span></header>"
-            (signature_html signatures pid) (html analysis) (List.length nodes);
+            (signature_html signatures pid)
+            (html analysis) (List.length nodes);
           fprintf ch
             "<div class=\"toolbar\"><p>Click a node to inspect its state. \
              Click a <a href=\"index.html\">blue function name</a> to open its \
@@ -378,7 +390,8 @@ let generate ~dir ~prefix ~analysis ~out ~dot =
   List.iteri
     (fun i pid ->
       eprintf "[%d/%d] Rendering %s\n%!" (i + 1) (List.length pids) pid;
-      generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg pid)
+      generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures
+        icfg pid)
     pids;
   write (Filename.concat out "index.html") (fun ch ->
       page ch "Functions" (fun ch ->

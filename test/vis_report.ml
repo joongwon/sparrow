@@ -23,14 +23,18 @@ let () =
   let signatures = VisReport.function_signatures global.file in
   let signature name =
     Str.global_replace (Str.regexp "[ \t\r\n]+") " "
-      (Hashtbl.find signatures name) in
-  check (contains (signature "callee") "int callee(int x")
+      (Hashtbl.find signatures name)
+  in
+  check
+    (contains (signature "callee") "int callee(int x")
     "Signature must include return type and named parameters";
-  check (contains (signature "main") "main(void)")
+  check
+    (contains (signature "main") "main(void)")
     "Signature must preserve a void parameter list";
-  check (contains (signature "choose") "callback" &&
-         contains (signature "choose") "..." &&
-         contains (signature "choose") "(*")
+  check
+    (contains (signature "choose") "callback"
+    && contains (signature "choose") "..."
+    && contains (signature "choose") "(*")
     "Signature must preserve function pointers and variadic parameters";
   let nodes = InterCfg.nodes_of_pid global.icfg "main" in
   let direct =
@@ -80,8 +84,10 @@ let () =
              (Filename.remove_extension (VisReport.function_file "main")
              ^ ".svg"))
       in
-      check (contains page "class=\"function-signature\"" &&
-             contains page "main(void)") "Function page must show its signature";
+      check
+        (contains page "class=\"function-signature\""
+        && contains page "main(void)")
+        "Function page must show its signature";
       check
         (contains page "external / no CFG")
         "External callee should be marked";
