@@ -59,8 +59,10 @@ let eval_const : Cil.constant -> Val.t =
   | Cil.CInt (i64, _, _) ->
       let itv = try Itv.of_int (Cilint.int_of_cilint i64) with _ -> Itv.top in
       Val.of_itv itv
-  | Cil.CStr (s, _) -> Val.of_itv Itv.top
-  | Cil.CWStr (s, _) -> Val.of_itv Itv.top
+  | Cil.CStr _ ->
+      invalid_arg "itvSem.ml: string literal was not lowered to Csalloc"
+  | Cil.CWStr _ ->
+      invalid_arg "itvSem.ml: wide string literals are not supported"
   | Cil.CChr c -> Val.of_itv (Itv.of_int (int_of_char c))
   (* Float numbers are modified to itvs.  If you want to make a
      precise and sound analysis for float numbers, you have to

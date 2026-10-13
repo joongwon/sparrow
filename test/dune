@@ -13,6 +13,9 @@
 
 (rule
  (alias runtest)
+ (deps
+  (glob_files *.c)
+  (glob_files *.c.answer))
  (action
   (run ./test.exe %{exe:../src/main.exe})))
 
@@ -28,3 +31,11 @@
  (deps vis_report.c)
  (action
   (run %{test} %{dep:vis_report.c})))
+
+(test
+ (name string_literals)
+ (modules string_literals)
+ (libraries sparrow_lib)
+ (deps string_literals.c)
+ (action
+  (run %{test} %{dep:string_literals.c})))

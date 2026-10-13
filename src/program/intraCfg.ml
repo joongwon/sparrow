@@ -577,44 +577,28 @@ let replace_node_graph : node -> node -> node -> t -> t =
 (* string allocation  *)
 let transform_string_allocs : Cil.fundec -> t -> t =
  fun fd g ->
-  let rec replace_str : Cil.exp -> Cil.exp * (Cil.lval * string) list =
-   fun e ->
-    match e with
-    | Const (CStr (s, _)) ->
-        let tempinfo =
-          Cil.makeTempVar fd (Cil.TPtr (Cil.TInt (IChar, []), []))
-        in
-        let temp = (Cil.Var tempinfo, Cil.NoOffset) in
-        (Lval temp, [ (temp, s) ])
-    | Lval (Mem exp, off) -> (
-        let exp', l = replace_str exp in
-        match l with [] -> (e, l) | _ -> (Lval (Mem exp', off), l))
-    | SizeOfStr s ->
-        let tempinfo =
-          Cil.makeTempVar fd (Cil.TPtr (Cil.TInt (IChar, []), []))
-        in
-        let temp = (Cil.Var tempinfo, Cil.NoOffset) in
-        (Lval temp, [ (temp, s) ])
-    | SizeOfE exp -> (
-        let exp', l = replace_str exp in
-        match l with [] -> (e, l) | _ -> (SizeOfE exp', l))
-    | AlignOfE exp -> (
-        let exp', l = replace_str exp in
-        match l with [] -> (e, l) | _ -> (AlignOfE exp', l))
-    | UnOp (u, exp, t) -> (
-        let exp', l = replace_str exp in
-        match l with [] -> (e, l) | _ -> (UnOp (u, exp', t), l))
-    | BinOp (b, e1, e2, t) -> (
-        let e1', l1 = replace_str e1 in
-        let e2', l2 = replace_str e2 in
-        match l1 @ l2 with
-        | [] -> (e, [])
-        | _ -> (BinOp (b, e1', e2', t), l1 @ l2))
-    | CastE (ck, t, exp) -> (
-        let exp', l = replace_str exp in
-        match l with [] -> (e, l) | _ -> (CastE (ck, t, exp'), l))
-    | _ -> (e, [])
+  let allocations = ref [] in
+  let visitor =
+    object
+      inherit Cil.nopCilVisitor
+
+      method! vexpr e =
+        match e with
+        | Const (CStr (s, _)) ->
+            let tempinfo =
+              Cil.makeTempVar fd (Cil.TPtr (Cil.TInt (IChar, []), []))
+            in
+            let temp = (Cil.Var tempinfo, Cil.NoOffset) in
+            allocations := (temp, s) :: !allocations;
+            Cil.ChangeTo (Lval temp)
+        (* These operands are not evaluated. In particular, sizeof a literal
+         must keep its array size rather than become sizeof a pointer. *)
+        | SizeOfStr _ | SizeOfE _ | AlignOfE _ -> Cil.SkipChildren
+        | _ -> Cil.DoChildren
+    end
   in
+  let exp e = Cil.visitCilExpr visitor e in
+  let lval lv = Cil.visitCilLval visitor lv in
   let generate_sallocs :
       (Cil.lval * string) list -> Cil.location -> node -> t -> node * t =
    fun l loc node g ->
@@ -627,86 +611,30 @@ let transform_string_allocs : Cil.fundec -> t -> t =
         (new_node, g))
       (node, g) l
   in
-  (* make it consistent with manual encoding in *Sem.ml *)
-  let targets =
-    [
-      "strcpy";
-      "strcat";
-      "strncpy";
-      "memcpy";
-      "memmove";
-      "strlen";
-      "fgets";
-      "sprintf";
-      "scanf";
-      "getenv";
-      "strdup";
-      "gettext";
-      "getpwent";
-      "strchr";
-      "strrchr";
-    ]
-  in
   fold_node
     (fun n g ->
-      match find_cmd n g with
-      | Cmd.Cset (lv, e, loc) -> (
-          match replace_str e with
-          | _, [] -> g
-          | e, l ->
-              let empty_node, last_node = (Node.make (), Node.make ()) in
-              let g = add_cmd empty_node Cmd.Cskip g in
-              let node, g = generate_sallocs l loc empty_node g in
-              let cmd = Cmd.Cset (lv, e, loc) in
-              let g = add_cmd last_node cmd g in
-              let g = add_edge node last_node g in
-              replace_node_graph n empty_node last_node g)
-      | Cmd.Cassume (e, loc) -> (
-          match replace_str e with
-          | _, [] -> g
-          | e, l ->
-              let empty_node, last_node = (Node.make (), Node.make ()) in
-              let g = add_cmd empty_node Cmd.Cskip g in
-              let node, g = generate_sallocs l loc empty_node g in
-              let cmd = Cmd.Cassume (e, loc) in
-              let g = add_cmd last_node cmd g in
-              let g = add_edge node last_node g in
-              replace_node_graph n empty_node last_node g
-              (* do not allocate memory cells for arguments of external lib calls *)
-          )
-      | Cmd.Ccall (lv, Cil.Lval (Cil.Var f, Cil.NoOffset), el, loc)
-        when f.vstorage = Cil.Extern && not (List.mem f.vname targets) ->
-          g
-      | Cmd.Ccall (lv, f, el, loc) -> (
-          let el, l =
-            List.fold_left
-              (fun (el, l) param ->
-                let e', l' = replace_str param in
-                (el @ [ e' ], l @ l'))
-              ([], []) el
+      allocations := [];
+      let cmd =
+        match find_cmd n g with
+        | Cmd.Cset (lv, e, loc) -> Cmd.Cset (lval lv, exp e, loc)
+        | Cmd.Cassume (e, loc) -> Cmd.Cassume (exp e, loc)
+        | Cmd.Ccall (lv, f, args, loc) ->
+            (* Extern is a storage class, not evidence of a missing body.
+               External models also need valid pointer arguments. *)
+            Cmd.Ccall (Option.map lval lv, exp f, List.map exp args, loc)
+        | Cmd.Creturn (Some e, loc) -> Cmd.Creturn (Some (exp e), loc)
+        | cmd -> cmd
+      in
+      match List.rev !allocations with
+      | [] -> g
+      | strings ->
+          let entry, last = (Node.make (), Node.make ()) in
+          let g = add_cmd entry Cmd.Cskip g in
+          let node, g =
+            generate_sallocs strings (Cmd.location_of cmd) entry g
           in
-          match (el, l) with
-          | _, [] -> g
-          | el, l ->
-              let empty_node, last_node = (Node.make (), Node.make ()) in
-              let g = add_cmd empty_node Cmd.Cskip g in
-              let node, g = generate_sallocs l loc empty_node g in
-              let cmd = Cmd.Ccall (lv, f, el, loc) in
-              let g = add_cmd last_node cmd g in
-              let g = add_edge node last_node g in
-              replace_node_graph n empty_node last_node g)
-      | Cmd.Creturn (Some e, loc) -> (
-          match replace_str e with
-          | _, [] -> g
-          | e, l ->
-              let empty_node, last_node = (Node.make (), Node.make ()) in
-              let g = add_cmd empty_node Cmd.Cskip g in
-              let node, g = generate_sallocs l loc empty_node g in
-              let cmd = Cmd.Creturn (Some e, loc) in
-              let g = add_cmd last_node cmd g in
-              let g = add_edge node last_node g in
-              replace_node_graph n empty_node last_node g)
-      | _ -> g)
+          let g = add_cmd last cmd g |> add_edge node last in
+          replace_node_graph n entry last g)
     g g
 
 (** transform malloc to Calloc *)
@@ -1040,19 +968,6 @@ let merge_vertex g vl =
 let rec collect g n lval node_list exp_list =
   let s = succ n g |> List.hd in
   match (find_cmd n g, find_cmd s g) with
-  | Cmd.Csalloc (_, str, _), Cmd.Cset (l, e, _) ->
-      begin match Cil.removeOffsetLval l with
-      | l, Cil.Index (i, Cil.NoOffset)
-        when CilHelper.eq_lval lval l && Cil.isConstant i ->
-          let node_list, exp_list =
-            (n :: s :: node_list, Cil.mkString str :: exp_list)
-          in
-          let ss = succ s g in
-          if List.length ss = 1 then
-            collect g (List.hd ss) lval node_list exp_list
-          else (node_list, exp_list)
-      | _ -> (node_list, exp_list)
-      end
   | Cmd.Cset (l, e, _), _ when Cil.isConstant e ->
       begin match Cil.removeOffsetLval l with
       | l, Cil.Index (i, Cil.NoOffset)
@@ -1076,9 +991,6 @@ let is_candidate n g =
   if List.length ss = 1 then
     let s = List.hd ss in
     match (find_cmd n g, find_cmd s g) with
-    | Cmd.Csalloc (_, _, _), Cmd.Cset (lval, e, _)
-      when Cil.isPointerType (Cil.typeOf e) ->
-        is_starting_point lval
     | Cmd.Cset (lval, e, _), _ when Cil.isIntegralType (Cil.typeOf e) ->
         is_starting_point lval
     | _ -> None
