@@ -154,7 +154,8 @@ if (metadata) {
     });
     texts = {input:'Loading…', output:'Loading…'};
     status = {input:'loading', output:'loading'}; renderStates();
-    if (updateHash) location.hash = id;
+    // Keep node URLs bookmarkable without triggering native anchor scrolling.
+    if (updateHash && location.hash !== `#${id}`) history.pushState(null, '', `#${id}`);
     await Promise.all(['input','output'].map(async side => {
       try { const text = await load(node[side]); if (ticket === revision) {texts[side] = text; status[side] = node[side] ? 'ready' : 'missing'; renderStates();} }
       catch (error) { if (ticket === revision) {texts[side] = error.message; status[side] = 'error'; renderStates();} }
@@ -181,7 +182,9 @@ if (metadata) {
   });
   picker.addEventListener('change', () => select(picker.value));
   stateSearch.addEventListener('input', renderStates);
-  window.addEventListener('hashchange', () => {const id = location.hash.slice(1); if (id !== selected) select(id, false);});
+  const syncSelection = () => {const id = location.hash.slice(1); if (id !== selected) select(id, false);};
+  window.addEventListener('hashchange', syncSelection);
+  window.addEventListener('popstate', syncSelection);
   const svg = document.querySelector('.graph-view svg');
   let scale = 1;
   const width = svg.viewBox.baseVal.width;
