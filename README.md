@@ -28,6 +28,8 @@ type, parameter names and types, and variadic arguments where applicable.
 - Click a node's body (or select it from the Node menu) to inspect its saved
   input and output abstract states. Keyboard users can focus a node and press
   Enter or Space.
+- `skip` labels identify entries, exits, call return points, and CFG joins or
+  connectors. Return points describe implicit return-value updates where applicable.
 - Click an underlined blue function name inside a call node to navigate to
   that function's page. This does **not** select the call node. Resolved
   indirect-call targets are also linked; external functions without a CFG

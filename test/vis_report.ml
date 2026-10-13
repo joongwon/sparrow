@@ -53,6 +53,38 @@ let () =
   in
   let icfg = InterCfg.add_call_edge indirect "callee" global.icfg in
   let global = { global with icfg } in
+  let describe analysis node = VisReport.node_command ~analysis icfg node in
+  check
+    (contains (describe "itv" (InterCfg.entryof icfg "main")) "function entry")
+    "Missing entry role";
+  check
+    (contains (describe "itv" (InterCfg.exitof icfg "main")) "function exit")
+    "Missing exit role";
+  check
+    (contains (describe "oct" InterCfg.start_node) "octagon init")
+    "Missing octagon initialization";
+  let returned = InterCfg.returnof direct icfg in
+  check
+    (contains (describe "itv" returned) "call return: callee"
+    && contains (describe "itv" returned) "<- return, weak")
+    "Missing implicit return-value assignment";
+  check
+    (not (contains (describe "oct" returned) "<- return, weak"))
+    "Octagon return point incorrectly claims interval semantics";
+  check
+    (contains (describe "itv" (InterCfg.returnof indirect icfg)) "call return:")
+    "Missing indirect-call return role";
+  let external_call =
+    List.find
+      (fun node ->
+        VisReport.direct_callee (InterCfg.cmdof icfg node) = Some "external_fn")
+      nodes
+  in
+  check
+    (contains
+       (describe "itv" (InterCfg.returnof external_call icfg))
+       "call continuation: external_fn")
+    "External continuation incorrectly claims a return-value transfer";
   let root = Filename.temp_file "sparrow-vis-test" "" in
   Sys.remove root;
   Unix.mkdir root 0o755;
@@ -99,6 +131,16 @@ let () =
         (contains page "\"output\":null")
         "Missing state must not be rendered as bottom";
       check (contains page (VisReport.node_id direct)) "Missing node metadata";
+      List.iter
+        (fun label ->
+          check (contains page label) ("Missing state-panel label: " ^ label);
+          check (contains svg label) ("Missing graph label: " ^ label))
+        [
+          "function entry";
+          "function exit";
+          "call return: callee";
+          "call continuation: external_fn";
+        ];
       let states = Filename.concat out "states" in
       check
         (Array.length (Sys.readdir states) = 1)

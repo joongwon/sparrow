@@ -158,7 +158,48 @@ let link_cell known pid =
       (function_file pid) (html pid) (html pid)
   else sprintf "<TD>%s (external / no CFG)</TD>" (html pid)
 
-let command_label known cmd targets =
+let node_command ~analysis icfg node =
+  let cmd = InterCfg.cmdof icfg node in
+  let pid = InterCfg.Node.get_pid node in
+  let local = InterCfg.Node.get_cfgnode node in
+  match cmd with
+  | IntraCfg.Cmd.Cskip ->
+      if node = InterCfg.start_node then
+        if analysis = "oct" then "program entry / octagon init"
+        else "program entry"
+      else if IntraCfg.is_entry local then "function entry"
+      else if IntraCfg.is_exit local then "function exit"
+      else if InterCfg.is_returnnode node icfg then
+        let call = InterCfg.cmdof icfg (InterCfg.callof node icfg) in
+        match call with
+        | IntraCfg.Cmd.Ccall (result, exp, _, _) -> (
+            let target =
+              match direct_callee call with
+              | Some name -> name
+              | None -> CilHelper.s_exp exp
+            in
+            let external_call =
+              match direct_callee call with
+              | Some name -> InterCfg.is_undef name icfg
+              | None -> false
+            in
+            if external_call then "call continuation: " ^ target
+            else
+              "call return: " ^ target
+              ^
+              match result with
+              | Some lv when analysis = "itv" ->
+                  " [" ^ CilHelper.s_lv lv ^ " <- return, weak]"
+              | _ -> "")
+        | _ -> "call return"
+        (* Snapshots retain the CFG, not the DUG's per-location phi points.
+         Describe structural joins without claiming a sparse phi operation. *)
+      else if List.length (IntraCfg.pred local (InterCfg.cfgof icfg pid)) > 1
+      then "control-flow join"
+      else "control-flow connector"
+  | _ -> IntraCfg.Cmd.to_string cmd
+
+let command_label known cmd targets text =
   match cmd with
   | IntraCfg.Cmd.Ccall (result, exp, args, _) ->
       let prefix =
@@ -187,10 +228,7 @@ let command_label known cmd targets =
         ^ String.concat ""
             (List.map (fun p -> "<TR>" ^ link_cell known p ^ "</TR>") resolved)
         ^ "</TABLE></TD></TR>"
-  | _ ->
-      "<TR><TD ALIGN=\"LEFT\">"
-      ^ graph_text (IntraCfg.Cmd.to_string cmd)
-      ^ "</TD></TR>"
+  | _ -> "<TR><TD ALIGN=\"LEFT\">" ^ graph_text text ^ "</TD></TR>"
 
 let inline_svg path =
   let svg = read path in
@@ -261,7 +299,7 @@ let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg
              ALIGN=\"LEFT\"><B>%s</B></TD></TR>%s</TABLE>>];\n"
             (node_id node) (node_id node) color
             (html (InterCfg.Node.to_string node))
-            (command_label known cmd targets))
+            (command_label known cmd targets (node_command ~analysis icfg node)))
         nodes;
       IntraCfg.fold_edges
         (fun src dst () ->
@@ -285,7 +323,7 @@ let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg
              `Assoc
                [
                  ("name", `String (InterCfg.Node.to_string node));
-                 ("command", `String (IntraCfg.Cmd.to_string cmd));
+                 ("command", `String (node_command ~analysis icfg node));
                  ("input", ref_json input node);
                  ("output", ref_json output node);
                  ( "callees",
