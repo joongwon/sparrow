@@ -31,6 +31,11 @@ and filters functions. Each function page contains a Graphviz CFG:
   are marked explicitly.
 - Filter state text by variable/location, zoom the graph, or download its DOT
   and SVG. Selected nodes have bookmarkable URL fragments.
+- Choose **Diff** to compare the selected node's input and output. Red `−`
+  lines occur only in the input; green `+` lines occur only in the output.
+  Unchanged lines and trivial self-bindings are omitted, and the search field
+  filters changes too. This compares the displayed sparse-state text; it is
+  unavailable if either saved state is missing.
 
 State displays omit trivial function self-bindings such as
 `f -> (bot, bot, bot, bot, {f})`, with a count of omitted bindings. Aliases,
