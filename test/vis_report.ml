@@ -52,6 +52,13 @@ let () =
       nodes
   in
   let icfg = InterCfg.add_call_edge indirect "callee" global.icfg in
+  let icfg = InterCfg.add_call_edge direct "callee" icfg in
+  let callers = VisReport.caller_nodes icfg in
+  check
+    (List.sort InterCfg.Node.compare (Hashtbl.find callers "callee")
+    = List.sort InterCfg.Node.compare [ direct; indirect ])
+    "Caller index must include direct and resolved indirect calls without \
+     duplicates";
   let global = { global with icfg } in
   let describe analysis node = VisReport.node_command ~analysis icfg node in
   check
@@ -110,6 +117,27 @@ let () =
       let page =
         VisReport.read (Filename.concat out (VisReport.function_file "main"))
       in
+      let callee_page =
+        VisReport.read (Filename.concat out (VisReport.function_file "callee"))
+      in
+      check
+        (contains callee_page "Caller nodes (2)")
+        "Function page must show the caller count";
+      List.iter
+        (fun node ->
+          check
+            (contains callee_page
+               ("href=\""
+               ^ VisReport.function_file "main"
+               ^ "#" ^ VisReport.node_id node ^ "\""))
+            "Caller link must target the exact calling node")
+        [ direct; indirect ];
+      let uncalled_page =
+        VisReport.read (Filename.concat out (VisReport.function_file "choose"))
+      in
+      check
+        (contains uncalled_page "No caller nodes recorded.")
+        "Functions without callers must show an empty state";
       let svg =
         VisReport.read
           (Filename.concat out

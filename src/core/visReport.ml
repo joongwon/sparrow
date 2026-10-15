@@ -264,8 +264,52 @@ let signature_html signatures pid =
      signature\">%s</pre></div>"
     (html pid) (html signature)
 
-let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg
-    pid =
+let caller_nodes icfg =
+  let callers = Hashtbl.create 128 in
+  List.iter
+    (fun pid ->
+      List.iter
+        (fun node ->
+          let cmd = InterCfg.cmdof icfg node in
+          match cmd with
+          | IntraCfg.Cmd.Ccall _ ->
+              List.iter
+                (fun target ->
+                  let previous =
+                    Option.value ~default:[] (Hashtbl.find_opt callers target)
+                  in
+                  Hashtbl.replace callers target (node :: previous))
+                (callees icfg node cmd)
+          | _ -> ())
+        (InterCfg.nodes_of_pid icfg pid))
+    (InterCfg.pidsof icfg);
+  callers
+
+let write_callers ch callers pid =
+  let nodes =
+    Option.value ~default:[] (Hashtbl.find_opt callers pid)
+    |> List.sort_uniq InterCfg.Node.compare
+  in
+  fprintf ch
+    "<section class=\"caller-panel\" aria-labelledby=\"caller-title\"><h2 \
+     id=\"caller-title\">Caller nodes (%d)</h2>"
+    (List.length nodes);
+  if nodes = [] then
+    fprintf ch "<p class=\"muted\">No caller nodes recorded.</p>"
+  else (
+    fprintf ch "<ul class=\"caller-list\">";
+    List.iter
+      (fun node ->
+        fprintf ch "<li><a href=\"%s#%s\"><code>%s</code></a></li>"
+          (function_file (InterCfg.Node.get_pid node))
+          (node_id node)
+          (html (InterCfg.Node.to_string node)))
+      nodes;
+    fprintf ch "</ul>");
+  fprintf ch "</section>"
+
+let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures
+    ~callers icfg pid =
   let cfg = InterCfg.cfgof icfg pid in
   let nodes =
     List.sort InterCfg.Node.compare (InterCfg.nodes_of_pid icfg pid)
@@ -372,8 +416,10 @@ let generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures icfg
              aria-label=\"Control flow graph\">%s</section>"
             (inline_svg svg_path);
           fprintf ch
-            "<aside class=\"state-panel\" aria-label=\"Abstract state\"><h2 \
-             id=\"node-title\">Select a node</h2><pre id=\"node-command\" \
+            "<aside class=\"state-panel\" aria-label=\"Abstract state\">";
+          write_callers ch callers pid;
+          fprintf ch
+            "<h2 id=\"node-title\">Select a node</h2><pre id=\"node-command\" \
              class=\"command\">Click a node or choose it from the \
              list.</pre><nav id=\"callees\" aria-label=\"Called \
              functions\"></nav><p class=\"muted\">Saved sparse states: input \
@@ -424,12 +470,13 @@ let generate ~dir ~prefix ~analysis ~out ~dot =
   write (Filename.concat out "app.js") (fun ch -> output_string ch VisHtml.js);
   let pids = List.sort String.compare (InterCfg.pidsof icfg) in
   let known = Hashtbl.create (List.length pids) in
+  let callers = caller_nodes icfg in
   List.iter (fun p -> Hashtbl.add known p ()) pids;
   List.iteri
     (fun i pid ->
       eprintf "[%d/%d] Rendering %s\n%!" (i + 1) (List.length pids) pid;
       generate_function ~dot ~out ~analysis ~known ~input ~output ~signatures
-        icfg pid)
+        ~callers icfg pid)
     pids;
   write (Filename.concat out "index.html") (fun ch ->
       page ch "Functions" (fun ch ->
