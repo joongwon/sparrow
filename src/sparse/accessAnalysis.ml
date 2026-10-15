@@ -46,10 +46,11 @@ module Make (Sem : AccessSem.S) = struct
    fun global locset mem f ->
     let nodes = InterCfg.nodesof global.icfg in
     let initial =
-      list_fold
-        (fun node ->
-          Access.add_node node (Sem.accessof ~locset global node f mem))
-        nodes Access.empty
+      Access.empty
+      |> list_fold
+           (fun node ->
+             Access.add_node node (Sem.accessof ~locset global node f mem))
+           nodes
     in
     let abslocs =
       Access.fold

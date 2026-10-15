@@ -297,7 +297,7 @@ module MakeWithAccess (Sem : AccessSem.S) = struct
          (bind_fi_locs global spec.Spec.premem dug access)
          id
 
-  let finalize spec global dug access (worklist, global, inputof, outputof) =
+  let finalize spec dug access (worklist, global, inputof, outputof) =
     let inputof =
       if !Options.pfs < 100 then
         bind_unanalyzed_node global spec.Spec.premem dug access inputof
@@ -305,6 +305,7 @@ module MakeWithAccess (Sem : AccessSem.S) = struct
     in
     (worklist, global, inputof, outputof)
 
+  (** Prints the number of abstract locations in the spec *)
   let print_spec : Spec.t -> unit =
    fun spec ->
     my_prerr_endline
@@ -333,7 +334,7 @@ module MakeWithAccess (Sem : AccessSem.S) = struct
     (worklist, global, initialize spec global dug access, Table.empty)
     |> StepManager.stepf false "Fixpoint iteration with widening"
          (widening spec dug)
-    |> finalize spec global dug access
+    |> finalize spec dug access
     |> StepManager.stepf_opt !Options.narrow false
          "Fixpoint iteration with narrowing" (narrowing spec dug)
     |> fun (_, global, inputof, outputof) -> (global, inputof, outputof)

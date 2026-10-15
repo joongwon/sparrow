@@ -53,6 +53,7 @@ let parse : unit -> C.file =
       if !E.hadErrors then E.s (E.error "There were errors during merging");
       merged
 
+(** Compute the CFG for all functions in the given file. *)
 let makeCFGinfo : Cil.file -> Cil.file =
  fun f ->
   ignore (Makecfg.MakeCFG.calls_end_basic_blocks f);

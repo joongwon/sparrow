@@ -17,15 +17,28 @@ val ( &> ) : 'a option -> ('a -> 'b) -> 'b option
 val ( @ ) : 'a list -> 'a list -> 'a list
 val id : 'a -> 'a
 val flip : ('a -> 'b -> 'c) -> 'b -> 'a -> 'c
+
 val cond : bool -> ('a -> 'b) -> ('a -> 'b) -> 'a -> 'b
+(** [cond b f1 f2 x] returns [f1 x] if [b] is true, and [f2 x] otherwise. *)
+
 val opt : bool -> ('a -> 'a) -> 'a -> 'a
+(** [opt b f x] returns [f x] if [b] is true, and [x] otherwise. *)
+
 val case : (bool * ('a -> 'b)) list -> ('a -> 'b) -> 'a -> 'b
+(** [case [(cond1, f1); (cond2, f2); ...] default x] returns [f1 x] if [cond1]
+    is true, [f2 x] if [cond2] is true, and so on, or [default x] if none of the
+    conditions are true. *)
+
 val tuple : 'a -> 'a * 'a
 val compare_string : string -> string -> int
 val compare_bool : bool -> bool -> int
 val compare_int : int -> int -> int
 val domof : ('a, 'b) BatMap.t -> 'a BatSet.t
+
 val list_fold : ('a -> 'b -> 'b) -> 'a list -> 'b -> 'b
+(** [init |> list_fold f [a1; a2; ...; an]] computes
+    [init |> f a1 |> f a2 |> ... |> f an]. *)
+
 val list_fold2 : ('a -> 'b -> 'c -> 'c) -> 'a list -> 'b list -> 'c -> 'c
 val list_rev : 'a list -> 'a list
 val append_opt : 'a option -> 'a list -> 'a list
@@ -68,4 +81,7 @@ val fix : ('a BatSet.t -> 'a BatSet.t) -> 'a BatSet.t -> 'a BatSet.t
 val my_prerr_endline : string -> unit
 val my_prerr_newline : unit -> unit
 val my_prerr_string : string -> unit
+
 val prerr_memory_usage : unit -> unit
+(** [prerr_memory_usage ()] prints the current memory usage of the program to
+    stderr, when the [Options.verbose] level is set to 1 or higher. *)

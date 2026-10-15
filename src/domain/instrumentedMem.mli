@@ -16,6 +16,7 @@ module type S = sig
   val return_access : unit -> Access.info
 end
 
+(** Instrument the memory operations with access information tracking. *)
 module Make (Mem : MapDom.CPO) :
   S
     with type t = Mem.t

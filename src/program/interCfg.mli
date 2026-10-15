@@ -38,8 +38,12 @@ val cfgof : t -> pid -> IntraCfg.t
 val argsof : t -> pid -> Cil.varinfo list
 val cmdof : t -> Node.t -> IntraCfg.cmd
 
+(** The list of all procedure IDs *)
 val pidsof : t -> pid list
+
+(** The list of all InterCfg nodes in the program *)
 val nodesof : t -> Node.t list
+
 val entryof : t -> pid -> node
 val exitof : t -> pid -> node
 val callof : node -> t -> node

@@ -1,3 +1,4 @@
+(** Inter-procedural CFG *)
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -10,8 +11,6 @@
 (***********************************************************************)
 
 open GoblintCil
-(** Inter-procedural CFG *)
-
 open Vocab
 open Cil
 open Yojson.Safe
@@ -29,6 +28,7 @@ end
 module ProcSet = BatSet.Make (Proc)
 
 type pid = Proc.t
+(** Procedure ID *)
 
 module Node = struct
   type t = Proc.t * IntraCfg.Node.t [@@deriving compare]
@@ -127,12 +127,10 @@ let nodesof : t -> Node.t list =
  fun g ->
   BatMap.foldi
     (fun pid cfg ->
-      List.append (List.map (fun n -> Node.make pid n) (IntraCfg.nodesof cfg)))
+      List.append (IntraCfg.nodesof cfg |> List.map (Node.make pid)))
     g.cfgs []
 
-let pidsof : t -> pid list =
- fun g -> BatMap.foldi (fun pid _ acc -> pid :: acc) g.cfgs []
-
+let pidsof : t -> pid list = fun g -> BatMap.keys g.cfgs |> BatList.of_enum
 let is_undef : pid -> t -> bool = fun pid g -> not (BatMap.mem pid g.cfgs)
 let is_entry = function _, node -> IntraCfg.is_entry node
 let is_exit = function _, node -> IntraCfg.is_exit node

@@ -9,3 +9,5 @@
 (*                                                                     *)
 (***********************************************************************)
 val select : Global.t -> BasicDom.PowLoc.t -> BasicDom.PowLoc.t
+(** Select a set of locations to apply flow sensitivity, depending on the
+    Options.pfs flag. *)

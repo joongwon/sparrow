@@ -15,11 +15,11 @@ open Cil
 open Global
 open Vocab
 
-(* transformation based on syntactic heuristics *)
+(** transformation based on syntactic heuristics *)
 let transform_simple file =
   opt !Options.unsound_alloc UnsoundAlloc.transform file
 
-(* transformation based on semantic heuristics *)
+(** transformation based on semantic heuristics *)
 let transform : Global.t -> Global.t =
  fun global ->
   let loop_transformed = UnsoundLoop.transform global in
@@ -32,6 +32,7 @@ let transform : Global.t -> Global.t =
     |> StepManager.stepf true "Pre-analysis (after inline)" PreAnalysis.perform
   else global (* nothing changed *)
 
+(** transform the CIL file, translate it to graphs, and perform pre-analysis *)
 let init_analysis : Cil.file -> Global.t =
  fun file ->
   file |> transform_simple
@@ -39,6 +40,7 @@ let init_analysis : Cil.file -> Global.t =
   |> StepManager.stepf true "Pre-analysis" PreAnalysis.perform
   |> transform
 
+(** Log the number of procedures and nodes in the program *)
 let print_pgm_info : Global.t -> Global.t =
  fun global ->
   let pids = InterCfg.pidsof global.icfg in
@@ -47,6 +49,7 @@ let print_pgm_info : Global.t -> Global.t =
   prerr_endline ("#Nodes : " ^ string_of_int (List.length nodes));
   global
 
+(** Prints the CIL IR and exits *)
 let print_il file =
   (if !Options.inline = [] && BatSet.is_empty !Options.unsound_loop then
      Cil.dumpFile !Cil.printerForMaincil stdout "" (transform_simple file)
@@ -55,6 +58,7 @@ let print_il file =
      Cil.dumpFile !Cil.printerForMaincil stdout "" global.file);
   exit 0
 
+(** Prints the callgraph and CFGs in JSON format and exits *)
 let print_cfg : Global.t -> Global.t =
  fun global ->
   `Assoc
@@ -65,6 +69,7 @@ let print_cfg : Global.t -> Global.t =
   |> Yojson.Safe.pretty_to_channel stdout;
   exit 0
 
+(** Prints the analysis results *)
 let finish t0 () =
   my_prerr_endline "Finished properly.";
   Profiler.report stdout;
@@ -80,6 +85,7 @@ let taint_analysis (global, itvinputof, _, _) =
     (global, itvinputof)
   |> fun (global, _, _, alarm) -> (global, alarm)
 
+(** Prints the features vectors used for unsound analysis and exits *)
 let extract_feature : Global.t -> Global.t =
  fun global ->
   if !Options.extract_loop_feat then

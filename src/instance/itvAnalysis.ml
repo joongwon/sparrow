@@ -388,6 +388,7 @@ let inspect_alarm : Global.t -> Spec.t -> Table.t -> Report.query list =
   @ (if !Options.nd then generate (global, inputof, Report.ND) else [])
   @ if !Options.dz then generate (global, inputof, Report.DZ) else []
 
+(** Collect all abstract locations occurring in the memory. *)
 let get_locset mem =
   ItvDom.Mem.foldi
     (fun l v locset ->
@@ -417,7 +418,8 @@ let do_analysis : Global.t -> Global.t * Table.t * Table.t * Report.query list =
       Spec.unsound_bitwise;
     }
   in
-  cond !Options.marshal_in marshal_in (Analysis.perform spec) global
+  global
+  |> cond !Options.marshal_in marshal_in (Analysis.perform spec)
   |> opt !Options.marshal_out marshal_out
   |> StepManager.stepf true "Generate Alarm Report"
        (fun (global, inputof, outputof) ->

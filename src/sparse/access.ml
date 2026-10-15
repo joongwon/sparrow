@@ -162,6 +162,7 @@ module Make (Dom : MapDom.CPO) = struct
   module LocMap = BatMap.Make (Loc)
 
   type info = Info.t
+  (** def/use record *)
 
   type t = {
     total_abslocs : PowLoc.t;

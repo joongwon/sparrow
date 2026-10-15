@@ -1,4 +1,4 @@
-open GoblintCil
+(** Semantics of interval analysis *)
 
 (***********************************************************************)
 (*                                                                     *)
@@ -10,9 +10,9 @@ open GoblintCil
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-open Vocab
-(** Semantics of interval analysis *)
 
+open GoblintCil
+open Vocab
 open Cil
 open IntraCfg
 open AbsSem

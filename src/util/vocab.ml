@@ -32,8 +32,6 @@ let compare_bool = Base.compare_bool
 let compare_int = Base.compare_int
 let domof m = BatMap.foldi (fun k _ set -> BatSet.add k set) m BatSet.empty
 
-(** This applies [List.fold_left], but the argument type is the same with
-    [PSet.fold]. *)
 let list_fold : ('a -> 'b -> 'b) -> 'a list -> 'b -> 'b =
  fun f list init -> List.fold_left (flip f) init list
 
