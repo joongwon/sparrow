@@ -98,24 +98,53 @@ let save_state out text =
           (json (`String text)));
   key
 
-let load_states ~out ~analysis path =
+let load_states ~out ~analysis ~side path =
   let refs = Hashtbl.create 16384 in
-  let add node text = Hashtbl.replace refs node (save_state out text) in
+  let load_snapshot () =
+    eprintf "Loading %s snapshot…\n%!" side;
+    let started = Unix.gettimeofday () in
+    let snapshot = unmarshal path in
+    eprintf "Loaded %s snapshot in %.2fs\n%!" side
+      (Unix.gettimeofday () -. started);
+    snapshot
+  in
+  let export total iter =
+    let started = Unix.gettimeofday () in
+    let last_report = ref started in
+    let completed = ref 0 in
+    let report now =
+      let percent =
+        if total = 0 then 100.
+        else 100. *. float_of_int !completed /. float_of_int total
+      in
+      eprintf "Exporting %s states: %d/%d (%.1f%%) elapsed=%.2fs\n%!" side
+        !completed total percent (now -. started);
+      last_report := now
+    in
+    report started;
+    iter (fun node text ->
+        Hashtbl.replace refs node (save_state out text);
+        incr completed;
+        let now = Unix.gettimeofday () in
+        if !completed = total || now -. !last_report >= 1. then report now)
+  in
   (match analysis with
   | "itv" ->
-      let table : ItvDom.Table.t = unmarshal path in
-      ItvDom.Table.iter
-        (fun node mem -> add node (Format.asprintf "%a" ItvDom.Mem.pp mem))
-        table
+      let table : ItvDom.Table.t = load_snapshot () in
+      export (ItvDom.Table.cardinal table) (fun add ->
+          ItvDom.Table.iter
+            (fun node mem -> add node (Format.asprintf "%a" ItvDom.Mem.pp mem))
+            table)
   | "oct" ->
       (* Deserialize one memory at a time: retaining both Apron tables is costly. *)
-      let nodes = unmarshal path in
-      List.iter
-        (fun ((node, _) as entry) ->
-          let table = OctAnalysis.deserialize_table [ entry ] in
-          let mem = OctAnalysis.Table.find node table in
-          add node (Format.asprintf "%a" OctDom.Mem.pp mem))
-        nodes
+      let nodes = load_snapshot () in
+      export (List.length nodes) (fun add ->
+          List.iter
+            (fun ((node, _) as entry) ->
+              let table = OctAnalysis.deserialize_table [ entry ] in
+              let mem = OctAnalysis.Table.find node table in
+              add node (Format.asprintf "%a" OctDom.Mem.pp mem))
+            nodes)
   | _ -> invalid_arg "analysis must be itv or oct");
   refs
 
@@ -458,9 +487,12 @@ let generate ~dir ~prefix ~analysis ~out ~dot =
   Unix.mkdir out 0o755;
   Unix.mkdir (Filename.concat out "states") 0o755;
   let load side =
-    eprintf "Exporting %s states…\n%!" side;
-    let refs = load_states ~out ~analysis (base ^ "." ^ side) in
+    let refs = load_states ~out ~analysis ~side (base ^ "." ^ side) in
+    eprintf "Collecting garbage after %s export…\n%!" side;
+    let started = Unix.gettimeofday () in
     Gc.full_major ();
+    eprintf "GC after %s export completed in %.2fs\n%!" side
+      (Unix.gettimeofday () -. started);
     refs
   in
   let input = load "input" in

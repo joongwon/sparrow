@@ -12,6 +12,50 @@ This is the academic version of Sparrow that is different from the [commercial v
 
 ### Browse saved analysis results
 
+#### Inspect interval states in utop
+
+`opam install .` installs `sparrow-utop` and its utop dependency. With the opam
+switch environment active, run it from any directory:
+
+```sh
+sparrow-utop --marshal-dir /path/to/analysis --prefix merged
+```
+
+This loads `merged.itv.global`, `merged.itv.input`, and `merged.itv.output`,
+opens `Inspect`, and registers printers for nodes, locations, and interval
+values/memories. Only interval (`itv`) snapshots are supported.
+
+```ocaml
+functions ();;
+nodes ~func:"main" ();;
+let n = node "main-ENTRY";; (* Use an exact name printed by nodes (). *)
+input n;;
+output n;;
+ItvDom.Mem.le (input n) (output n);;
+```
+
+`node` uses the same node names as sparrow-vis. Unknown names and unrecorded
+input/output entries produce explicit errors. Returned memories are the saved
+**sparse** states, not reconstructed full memories.
+
+You can also start `sparrow-utop` without arguments and load or replace the
+session interactively:
+
+```ocaml
+load ~prefix:"merged" "/path/to/analysis";;
+let global = (current ()).global;;
+InterCfg.cmdof global.icfg (node "main-ENTRY");;
+```
+
+`Inspect.state : Inspect.snapshot option ref` holds the current snapshot;
+`current ()` exposes its `global`, `input_table`, and `output_table` fields.
+A failed load leaves the previous snapshot intact. All three files are loaded
+into memory, so large snapshots may take time and substantial RAM. Use trusted
+snapshots produced by a compatible Sparrow build. Additional utop options can
+be passed after `--` (for example, `sparrow-utop -- -emacs`).
+
+#### Generate an offline HTML report
+
 Install Graphviz (`sudo apt-get install graphviz` on Ubuntu), then generate an
 offline report from snapshots written by Sparrow's `-marshal_out` option:
 

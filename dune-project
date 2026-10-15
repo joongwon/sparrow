@@ -14,6 +14,7 @@
   apron
   yojson
   pyml
+  utop
   ppx_compare
   ppx_deriving
   (goblint-cil (= 2.1.1))))

@@ -1,0 +1,9 @@
+(executable
+ (name launcher)
+ (public_name sparrow-utop)
+ (modules launcher)
+ (libraries findlib unix))
+
+(install
+ (section lib)
+ (files (init.ml as utop_init.ml)))
