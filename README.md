@@ -29,6 +29,8 @@ values/memories. Only interval (`itv`) snapshots are supported.
 functions ();;
 nodes ~func:"main" ();;
 let n = node "main-ENTRY";; (* Use an exact name printed by nodes (). *)
+command n;;
+location n;;
 input n;;
 output n;;
 ItvDom.Mem.le (input n) (output n);;
@@ -37,6 +39,14 @@ ItvDom.Mem.le (input n) (output n);;
 `node` uses the same node names as sparrow-vis. Unknown names and unrecorded
 input/output entries produce explicit errors. Returned memories are the saved
 **sparse** states, not reconstructed full memories.
+
+`command n` returns the CFG command and prints it as readable text. `location n`
+returns a `GoblintCil.Cil.location option`, displayed as `Some file:line`.
+Entry, exit, skip nodes and commands without a known source location return
+`None`. These queries also work for nodes without saved input/output entries.
+Source paths are those recorded in the snapshot; the original files need not
+be present. The location record retains column and other CIL metadata for
+programmatic inspection.
 
 You can also start `sparrow-utop` without arguments and load or replace the
 session interactively:

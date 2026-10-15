@@ -21,13 +21,18 @@ let () =
   Unix.mkdir root 0o700;
   Fun.protect
     ~finally:(fun () ->
-      Array.iter (fun name -> Sys.remove (Filename.concat root name)) (Sys.readdir root);
+      Array.iter
+        (fun name -> Sys.remove (Filename.concat root name))
+        (Sys.readdir root);
       Unix.rmdir root)
     (fun () ->
       let write suffix value =
-        let ch = open_out_bin (Filename.concat root ("fixture.itv." ^ suffix)) in
-        Fun.protect ~finally:(fun () -> close_out ch) (fun () ->
-            Marshal.to_channel ch value [])
+        let ch =
+          open_out_bin (Filename.concat root ("fixture.itv." ^ suffix))
+        in
+        Fun.protect
+          ~finally:(fun () -> close_out ch)
+          (fun () -> Marshal.to_channel ch value [])
       in
       write "global" global;
       write "input" (ItvDom.Table.add n before ItvDom.Table.bot);
@@ -39,9 +44,41 @@ let () =
       check (InterCfg.Node.equal n found) "Node name did not round-trip";
       check (ItvDom.Mem.eq before (Inspect.input found)) "Wrong input state";
       check (ItvDom.Mem.eq after (Inspect.output found)) "Wrong output state";
+      check (Inspect.command found = IntraCfg.Cmd.Cskip) "Wrong entry command";
+      check (Inspect.location found = None) "Entry must have no source location";
+      let call =
+        List.find
+          (fun n ->
+            match Inspect.command n with
+            | IntraCfg.Cmd.Ccall
+                ( _,
+                  GoblintCil.Cil.Lval
+                    (GoblintCil.Cil.Var v, GoblintCil.Cil.NoOffset),
+                  _,
+                  _ ) ->
+                v.vname = "external_fn"
+            | _ -> false)
+          (Inspect.nodes ~func:"main" ())
+      in
+      (match Inspect.location call with
+      | Some loc ->
+          check
+            (Filename.basename loc.file = "vis_report.c" && loc.line = 8)
+            "Wrong source location for external call";
+          check
+            (Format.asprintf "%a" Inspect.pp_location loc = loc.file ^ ":8")
+            "Source location printer lost the path or line"
+      | None -> failwith "Missing call source location");
+      check
+        (String.length
+           (Format.asprintf "%a" Inspect.pp_command (Inspect.command call))
+        > 0)
+        "Empty command display";
+      expect_error (fun () -> Inspect.input call);
       expect_error (fun () -> Inspect.node "not-a-node");
       expect_error (fun () -> Inspect.nodes ~func:"not-a-function" ());
-      expect_error (fun () -> Inspect.input (InterCfg.exitof global.icfg "main"));
+      expect_error (fun () ->
+          Inspect.input (InterCfg.exitof global.icfg "main"));
       let previous = Inspect.current () in
       Sys.remove (Filename.concat root "fixture.itv.output");
       expect_error (fun () -> Inspect.load ~prefix:"fixture" root);

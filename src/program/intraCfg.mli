@@ -1,4 +1,4 @@
-open GoblintCil
+(** Intra-procedural CFG *)
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -9,7 +9,9 @@ open GoblintCil
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Intra-procedural CFG *)
+
+open GoblintCil
+
 module Node : sig
   include AbsDom.HASHABLE_SET
 

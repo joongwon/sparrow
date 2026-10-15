@@ -6,4 +6,5 @@
 
 (install
  (section lib)
- (files (init.ml as utop_init.ml)))
+ (files
+  (init.ml as utop_init.ml)))

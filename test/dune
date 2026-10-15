@@ -8,7 +8,8 @@
  (modules inspect_test)
  (libraries sparrow_lib unix)
  (deps vis_report.c)
- (action (run %{test} %{dep:vis_report.c})))
+ (action
+  (run %{test} %{dep:vis_report.c})))
 
 (test
  (name oct_constants)
