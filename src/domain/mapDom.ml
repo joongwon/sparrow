@@ -9,8 +9,6 @@
 (*                                                                     *)
 (***********************************************************************)
 open AbsDom
-(** Map domain *)
-
 open Vocab
 
 module type CPO = sig
@@ -235,9 +233,8 @@ module MakeCPO (A : AbsDom.SET) (B : AbsDom.CPO) = struct
 
   (** {6 Functions for an efficient fixpoint iteration} *)
 
-  (** Calculate unstable memory entries and values.
-
-      Returns a list of triples, (key, old value, new value). *)
+  (** Calculate unstable memory entries and values. Returns a list of triples,
+      (key, old value, new value). *)
   let unstables :
       t -> t -> (B.t -> B.t -> bool) -> PowA.t -> (A.t * B.t * B.t) list =
    fun old_m new_m is_unstb candidate ->
@@ -389,6 +386,7 @@ module MakeLAT (A : AbsDom.SET) (B : AbsDom.CPO) = struct
       [fold f [ ] acc] return the same value. *)
   let fold f x a = match x with V m -> MapCPO.fold f m a | Top -> a
 
+  (** alias for fold *)
   let foldi = fold
 
   (** {6 Functions for an efficient fixpoint iteration} *)

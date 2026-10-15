@@ -1,4 +1,4 @@
-open GoblintCil
+(** Abstract Array Block *)
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -9,8 +9,8 @@ open GoblintCil
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(* Abstract Array Block *)
 
+open GoblintCil
 open AbsDom
 open ProdDom
 open BasicDom
@@ -211,14 +211,12 @@ let allocsites_of_array a = foldi (fun k _ -> BatSet.add k) a BatSet.empty
 
 let pow_loc_of_array : t -> PowLoc.t =
  fun array ->
-  let pow_loc_of_allocsite k _ acc = PowLoc.add (Loc.of_allocsite k) acc in
-  foldi pow_loc_of_allocsite array PowLoc.bot
+  foldi (fun k _ -> PowLoc.add (Loc.of_allocsite k)) array PowLoc.bot
 
 let struct_of_array a =
   foldi
     (fun k v ->
-      if PowStruct.bot <> v.ArrInfo.structure then
-        PowLoc.add (Loc.of_allocsite k)
+      if PowStruct.bot <> v.structure then PowLoc.add (Loc.of_allocsite k)
       else id)
     a PowLoc.bot
 
@@ -226,9 +224,9 @@ let append_field : t -> Cil.fieldinfo -> PowLoc.t =
  fun s f ->
   foldi
     (fun a info ->
-      if PowStruct.mem f.Cil.fcomp.Cil.cname info.ArrInfo.structure then
+      if PowStruct.mem f.fcomp.cname info.structure then
         let loc = Loc.of_allocsite a in
-        PowLoc.add (Loc.append_field loc f.Cil.fname f.Cil.ftype)
+        PowLoc.add (Loc.append_field loc f.fname f.ftype)
       else id)
     s PowLoc.bot
 

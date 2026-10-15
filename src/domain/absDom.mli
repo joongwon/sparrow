@@ -1,3 +1,4 @@
+(** Signature for abstract domain *)
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -8,7 +9,6 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Signature for abstract domain *)
 
 (** Signature of set *)
 module type SET = sig

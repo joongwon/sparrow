@@ -32,4 +32,7 @@ val make_cond_simple : Cil.exp -> Cil.exp option
 val remove_cast : Cil.exp -> Cil.exp
 val remove_coeff : Cil.exp -> Cil.exp
 val is_unsigned : Cil.typ -> bool
+
 val byteSizeOf : Cil.typ -> int
+(** Computes the size of a type in bytes. Raises an exception if the size cannot
+    be determined. *)

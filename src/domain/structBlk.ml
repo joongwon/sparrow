@@ -1,5 +1,3 @@
-open GoblintCil
-
 (***********************************************************************)
 (*                                                                     *)
 (* Copyright (c) 2007-present.                                         *)
@@ -10,11 +8,13 @@ open GoblintCil
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
+open GoblintCil
 open AbsDom
 open ProdDom
 open BasicDom
 open Vocab
 
+(** SET representing struct names *)
 module Struct = struct
   include String
 
@@ -27,14 +27,14 @@ include MapDom.MakeLAT (Loc) (PowStruct)
 
 let make : PowLoc.t -> Cil.compinfo -> t =
  fun ploc s ->
-  PowLoc.fold (fun l -> add l (PowStruct.singleton s.Cil.cname)) ploc bot
+  PowLoc.fold (fun l -> add l (PowStruct.singleton s.cname)) ploc bot
 
 let append_field : t -> Cil.fieldinfo -> PowLoc.t =
  fun s f ->
   foldi
     (fun loc info ->
-      if PowStruct.mem f.Cil.fcomp.Cil.cname info then
-        PowLoc.add (Loc.append_field loc f.Cil.fname f.Cil.ftype)
+      if PowStruct.mem f.fcomp.cname info then
+        PowLoc.add (Loc.append_field loc f.fname f.ftype)
       else id)
     s PowLoc.bot
 
