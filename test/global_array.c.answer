@@ -5,8 +5,10 @@ Excluded recursive functions : []
 Excluded too large functions : []
 #Procs : 2
 #Nodes : 23
-#Nodes in def-use graph : 18
-#Locs on def-use graph : 25
+#frame locals: 0
+#Nodes in def-use graph : 19
+#Edges in def-use graph : 18
+#Locs on def-use graph : 18
 
 = Alarms =
 

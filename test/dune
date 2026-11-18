@@ -4,5 +4,8 @@
 
 (rule
  (alias runtest)
+ (deps
+  (glob_files *.c)
+  (glob_files *.answer))
  (action
   (run ./test.exe %{exe:../src/main.exe})))
