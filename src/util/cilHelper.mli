@@ -25,7 +25,6 @@ val s_instr : Sparrow_cil.instr -> string
 val s_instrs : Sparrow_cil.instr list -> string
 val s_location : Sparrow_cil.location -> string
 val eq_lval : Sparrow_cil.lval -> Sparrow_cil.lval -> bool
-
 val rev_binop : Sparrow_cil.binop -> Sparrow_cil.binop
 val not_binop : Sparrow_cil.binop -> Sparrow_cil.binop
 val make_cond_simple : Sparrow_cil.exp -> Sparrow_cil.exp option
@@ -33,5 +32,6 @@ val remove_cast : Sparrow_cil.exp -> Sparrow_cil.exp
 val remove_coeff : Sparrow_cil.exp -> Sparrow_cil.exp
 val is_unsigned : Sparrow_cil.typ -> bool
 val byteSizeOf : Sparrow_cil.typ -> int
+
 val byteSizeOf_with_layout :
   (Sparrow_cil.compinfo -> Sparrow_cil.compinfo) -> Sparrow_cil.typ -> int

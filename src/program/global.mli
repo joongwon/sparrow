@@ -21,13 +21,12 @@ type t = {
 
 val init : Sparrow_cil.file -> t
 
-(** module (translation-unit) variant: no main required *)
 val init_module : Sparrow_cil.file -> t
+(** module (translation-unit) variant: no main required *)
 
-(** stable (function-local) node ids *)
 val init_module_stable : Sparrow_cil.file -> t
+(** stable (function-local) node ids *)
 
 val is_rec : InterCfg.pid -> t -> bool
 val is_undef : InterCfg.pid -> t -> bool
-
 val remove_unreachable_functions : t -> t

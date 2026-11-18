@@ -10,10 +10,11 @@
 (***********************************************************************)
 (** Worklist *)
 
-module type S =
-sig
+module type S = sig
   module DUGraph : Dug.S
+
   type t
+
   type order_entry = {
     node : BasicDom.Node.t;
     order : int;
@@ -21,11 +22,13 @@ sig
     loop_header : bool;
     head_order : int option;
   }
+
   type snapshot = {
     order : order_entry list;
     sccs : BasicDom.Node.t list list;
     loop_headers : BasicDom.Node.t list;
   }
+
   val init : DUGraph.t -> t
   val pick : t -> (BasicDom.Node.t * t) option
   val push_init : BasicDom.Node.t BatSet.t -> t -> t
@@ -35,4 +38,4 @@ sig
   val snapshot : t -> snapshot
 end
 
-module Make(DUGraph : Dug.S) : S with type DUGraph.t = DUGraph.t
+module Make (DUGraph : Dug.S) : S with type DUGraph.t = DUGraph.t

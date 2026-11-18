@@ -26,21 +26,24 @@ open BasicDom
 let rec root = function Loc.Field (l, _, _) -> root l | l -> l
 
 (* The procedure and name of the variable a location is rooted at. *)
-let variable loc = match root loc with Loc.LVar (p, x, _) -> Some (p, x) | _ -> None
+let variable loc =
+  match root loc with Loc.LVar (p, x, _) -> Some (p, x) | _ -> None
 
 let current = ref PowLoc.empty
 let suspended = ref 0
-
 let mem loc = !suspended = 0 && PowLoc.mem loc !current
 
 let without f =
   incr suspended;
   match f () with
-  | result -> decr suspended; result
-  | exception e -> decr suspended; raise e
+  | result ->
+      decr suspended;
+      result
+  | exception e ->
+      decr suspended;
+      raise e
 
 let set locations = current := locations
-
 let locations () = !current
 
 let compute ~(memory : ItvDom.Mem.t) ~(calls : (string list * PowLoc.t) list)
@@ -51,21 +54,31 @@ let compute ~(memory : ItvDom.Mem.t) ~(calls : (string list * PowLoc.t) list)
       PowLoc.iter
         (fun loc ->
           match root loc with
-          | Loc.LVar (p, x, _) when List.mem p callees -> Hashtbl.replace formal (p, x) ()
+          | Loc.LVar (p, x, _) when List.mem p callees ->
+              Hashtbl.replace formal (p, x) ()
           | _ -> ())
         defs)
     calls;
   (* The procedure a root is own to. *)
   let owner = function
-    | Loc.LVar (p, x, _) when x <> "__return__" && not (Hashtbl.mem formal (p, x)) -> Some p
-    | Loc.Allocsite a -> Option.map (fun (node, _) -> Node.get_pid node) (Allocsite.internal_node a)
+    | Loc.LVar (p, x, _)
+      when x <> "__return__" && not (Hashtbl.mem formal (p, x)) ->
+        Some p
+    | Loc.Allocsite a ->
+        Option.map
+          (fun (node, _) -> Node.get_pid node)
+          (Allocsite.internal_node a)
     | _ -> None
   in
   (* The candidates: the roots of the recursive procedures' proc-locals own to the procedure. *)
   let candidate = Hashtbl.create 1024 in
   List.iter
     (fun (pid, locals) ->
-      PowLoc.iter (fun loc -> let r = root loc in if owner r = Some pid then Hashtbl.replace candidate r pid) locals)
+      PowLoc.iter
+        (fun loc ->
+          let r = root loc in
+          if owner r = Some pid then Hashtbl.replace candidate r pid)
+        locals)
     recursive_locals;
   (* The candidates each root's value points to ([held]); a candidate pointed to from a root that
      is not a candidate of the same procedure leaves at once, and when a candidate leaves, so do
@@ -76,14 +89,16 @@ let compute ~(memory : ItvDom.Mem.t) ~(calls : (string list * PowLoc.t) list)
     match Hashtbl.find_opt candidate t with
     | None -> ()
     | Some pid ->
-        if Hashtbl.find_opt candidate holder = Some pid then Hashtbl.add held holder t
+        if Hashtbl.find_opt candidate holder = Some pid then
+          Hashtbl.add held holder t
         else Queue.add t out
   in
   ItvDom.Mem.iter
     (fun loc value ->
       let holder = root loc in
       PowLoc.iter (note holder) (ItvDom.Val.pow_loc_of_val value);
-      PowLoc.iter (note holder) (ArrayBlk.pow_loc_of_array (ItvDom.Val.array_of_val value));
+      PowLoc.iter (note holder)
+        (ArrayBlk.pow_loc_of_array (ItvDom.Val.array_of_val value));
       StructBlk.iter (fun l _ -> note holder l) (ItvDom.Val.struct_of_val value))
     memory;
   while not (Queue.is_empty out) do
@@ -95,5 +110,6 @@ let compute ~(memory : ItvDom.Mem.t) ~(calls : (string list * PowLoc.t) list)
   done;
   List.fold_left
     (fun found (_, locals) ->
-      PowLoc.union found (PowLoc.filter (fun loc -> Hashtbl.mem candidate (root loc)) locals))
+      PowLoc.union found
+        (PowLoc.filter (fun loc -> Hashtbl.mem candidate (root loc)) locals))
     PowLoc.empty recursive_locals

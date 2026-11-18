@@ -8,8 +8,7 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-module type S =
-sig
+module type S = sig
   module Dom : InstrumentedMem.S
 
   type t = {
@@ -22,9 +21,12 @@ sig
     unsound_update : bool;
     unsound_bitwise : bool;
   }
+
   val empty : t
 end
 
-module Make(Dom: InstrumentedMem.S) : S
-  with type Dom.t = Dom.t and type Dom.A.t = Dom.A.t
-  and type Dom.PowA.t = Dom.PowA.t
+module Make (Dom : InstrumentedMem.S) :
+  S
+    with type Dom.t = Dom.t
+     and type Dom.A.t = Dom.A.t
+     and type Dom.PowA.t = Dom.PowA.t

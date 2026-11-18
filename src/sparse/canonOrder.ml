@@ -22,7 +22,6 @@
    program's internal names. *)
 
 type position = Entry | Exit | Body of int
-
 type key = { module_id : string; procedure : string; position : position }
 
 let compare_position a b =
@@ -52,7 +51,8 @@ let string_of_position = function
   | Body i -> string_of_int i
 
 let string_of_key k =
-  Printf.sprintf "%s:%s-%s" k.module_id k.procedure (string_of_position k.position)
+  Printf.sprintf "%s:%s-%s" k.module_id k.procedure
+    (string_of_position k.position)
 
 (* The structural ordinal of a CFG's nodes: breadth-first from ENTRY, each
    node's successors in node-id order, then the unreached nodes in node-id
@@ -94,15 +94,18 @@ let structural_ordinals (cfg : IntraCfg.t) : (IntraCfg.Node.t, int) Hashtbl.t =
 (* Without a program-level naming (a single-TU run) the key is the node's
    own name. *)
 let default_key node =
-  { module_id = "";
+  {
+    module_id = "";
     procedure = InterCfg.Node.get_pid node;
-    position = position_of_cfgnode (InterCfg.Node.get_cfgnode node) }
+    position = position_of_cfgnode (InterCfg.Node.get_cfgnode node);
+  }
 
 (* A driver may install its own node key here; without one the key is the
    procedure and the position in its CFG (default_key). *)
 let node_key : (BasicDom.Node.t -> key) option ref = ref None
 
-let key_of node = match !node_key with Some f -> f node | None -> default_key node
+let key_of node =
+  match !node_key with Some f -> f node | None -> default_key node
 
 (* Observation only: the loop heads (keys) of the most recent worklist order,
    for comparing widening points between runs. *)
@@ -174,7 +177,10 @@ let fresh t =
    order (reverse topological), each in descending vertex order. *)
 let components_of t ~descending members inside cut =
   let gen = fresh t in
-  let numdfs = ref 0 and numcomp = ref 0 and stack_size = ref 0 and frame_size = ref 0 in
+  let numdfs = ref 0
+  and numcomp = ref 0
+  and stack_size = ref 0
+  and frame_size = ref 0 in
   let visit v =
     if t.root_gen.(v) <> gen then begin
       incr numdfs;
@@ -194,7 +200,8 @@ let components_of t ~descending members inside cut =
       let v = t.frame_vertex.(i) and child = t.frame_child.(i) in
       if child >= 0 then begin
         t.frame_child.(i) <- -1;
-        if t.comp_gen.(child) <> gen then t.root.(v) <- min t.root.(v) t.root.(child)
+        if t.comp_gen.(child) <> gen then
+          t.root.(v) <- min t.root.(v) t.root.(child)
       end
       else if t.frame_next.(i) >= 0 then begin
         let w = t.succ.(v).(t.frame_next.(i)) in
@@ -233,7 +240,11 @@ let components_of t ~descending members inside cut =
     finish ()
   done;
   let sizes = Array.make !numcomp 0 in
-  Array.iter (fun v -> let c = t.comp.(v) in sizes.(c) <- sizes.(c) + 1) members;
+  Array.iter
+    (fun v ->
+      let c = t.comp.(v) in
+      sizes.(c) <- sizes.(c) + 1)
+    members;
   let components = Array.map (fun size -> Array.make size 0) sizes in
   for i = 0 to length - 1 do
     let v = member i in
@@ -250,8 +261,13 @@ let consider ~call_first ~is_call ((candidate, score) as entry) best =
   | None -> Some entry
   | Some (_, previous) when score > previous -> Some entry
   | Some (chosen, previous) when score = previous ->
-      let priority = if call_first then Bool.compare (is_call chosen) (is_call candidate) else 0 in
-      if priority < 0 || (priority = 0 && Int.compare candidate chosen < 0) then Some entry else best
+      let priority =
+        if call_first then Bool.compare (is_call chosen) (is_call candidate)
+        else 0
+      in
+      if priority < 0 || (priority = 0 && Int.compare candidate chosen < 0) then
+        Some entry
+      else best
   | _ -> best
 
 (* The head of component [scc] (marked [self]) inside the level whose members
@@ -264,19 +280,24 @@ let consider ~call_first ~is_call ((candidate, score) as entry) best =
    entry candidates would differ had that predecessor been present is
    reported as entry-sensitive ([entry_sensitive]: the component, the head
    chosen, the head with the left-out entries). *)
-let head ?left_out ?entry_sensitive t ~call_first ~is_call ~components ~tied scc self parent =
+let head ?left_out ?entry_sensitive t ~call_first ~is_call ~components ~tied scc
+    self parent =
   incr components;
   let outside u =
     t.mark_self.(u) <> self
     && match parent with None -> true | Some pid -> t.mark_parent.(u) = pid
   in
-  let left_out = match parent, left_out with None, Some f -> Some f | _ -> None in
+  let left_out =
+    match (parent, left_out) with None, Some f -> Some f | _ -> None
+  in
   let best = ref None and top_score = ref (-1) and top_count = ref 0 in
   let best_ext = ref None and candidates = ref 0 and candidates_ext = ref 0 in
   Array.iter
     (fun v ->
       let inside_entry = Array.exists outside t.pred.(v) in
-      let left_out_entry = match left_out with Some f -> f v | None -> false in
+      let left_out_entry =
+        match left_out with Some f -> f v | None -> false
+      in
       if inside_entry || left_out_entry then begin
         let score = ref 0 in
         let predecessors = t.pred.(v) in
@@ -306,15 +327,15 @@ let head ?left_out ?entry_sensitive t ~call_first ~is_call ~components ~tied scc
         if !top_count > 1 then incr tied;
         vertex
   in
-  (match left_out, entry_sensitive with
-   | Some _, Some sink when !candidates_ext > !candidates ->
-       (* The entry candidates differ with the left-out entries: reported
+  (match (left_out, entry_sensitive) with
+  | Some _, Some sink when !candidates_ext > !candidates ->
+      (* The entry candidates differ with the left-out entries: reported
           even when the head would come out the
           same (a fallback head equal to the only left-out candidate, or a
           left-out candidate that loses the score). *)
-       let with_ext = match !best_ext with Some (v, _) -> v | None -> chosen in
-       sink := (scc, chosen, with_ext) :: !sink
-   | _ -> ());
+      let with_ext = match !best_ext with Some (v, _) -> v | None -> chosen in
+      sink := (scc, chosen, with_ext) :: !sink
+  | _ -> ());
   chosen
 
 (* Sparrow's recursive weak topological order ([get_order1]): a component of
@@ -334,13 +355,15 @@ type band_record = {
   rec_top : int;
 }
 
-let order_arrays ?left_out ?entry_sensitive t ~descending_members ~call_first ~is_call ~components ~tied
-    sccs =
+let order_arrays ?left_out ?entry_sensitive t ~descending_members ~call_first
+    ~is_call ~components ~tied sccs =
   let count = Array.length t.succ in
   let orders = Array.make count (-1)
   and heads = Array.make count false
   and head_orders = Array.make count (-1) in
-  let owner = Array.make count (-1) and records = ref [] and record_count = ref 0 in
+  let owner = Array.make count (-1)
+  and records = ref []
+  and record_count = ref 0 in
   let reverse rows =
     let last = Array.length rows - 1 in
     for i = 0 to (Array.length rows / 2) - 1 do
@@ -359,16 +382,28 @@ let order_arrays ?left_out ?entry_sensitive t ~descending_members ~call_first ~i
         let headorder = order + (3 * size) in
         let self = fresh t in
         Array.iter (fun v -> t.mark_self.(v) <- self) scc;
-        let head = head ?left_out ?entry_sensitive t ~call_first ~is_call ~components ~tied scc self parent in
+        let head =
+          head ?left_out ?entry_sensitive t ~call_first ~is_call ~components
+            ~tied scc self parent
+        in
         heads.(head) <- true;
         head_orders.(head) <- headorder;
         let index = !record_count in
         incr record_count;
         records :=
-          { rec_parent = enclosing; rec_base = order; rec_head_order = headorder; rec_size = size;
-            rec_head = head; rec_depth = depth; rec_top = (if enclosing < 0 then offset else -1) }
+          {
+            rec_parent = enclosing;
+            rec_base = order;
+            rec_head_order = headorder;
+            rec_size = size;
+            rec_head = head;
+            rec_depth = depth;
+            rec_top = (if enclosing < 0 then offset else -1);
+          }
           :: !records;
-        ignore (get_order sccs (offset + 1) descending parent enclosing depth (headorder + 1));
+        ignore
+          (get_order sccs (offset + 1) descending parent enclosing depth
+             (headorder + 1));
         let pid = fresh t in
         Array.iter (fun v -> t.mark_parent.(v) <- pid) scc;
         let members =
@@ -380,7 +415,10 @@ let order_arrays ?left_out ?entry_sensitive t ~descending_members ~call_first ~i
           end
         in
         let inner =
-          components_of t ~descending members (fun w -> t.mark_parent.(w) = pid) head |> reverse
+          components_of t ~descending members
+            (fun w -> t.mark_parent.(w) = pid)
+            head
+          |> reverse
         in
         get_order inner 0 true (Some pid) index (depth + 1) order
       end
@@ -399,20 +437,20 @@ let order_arrays ?left_out ?entry_sensitive t ~descending_members ~call_first ~i
    component's interior is numbered past its own head order. *)
 type band_violation = {
   band_kind : [ `Overlap | `Inner_overflow ];
-  band_head : int;  (* the component's head (a singleton: the vertex) *)
+  band_head : int; (* the component's head (a singleton: the vertex) *)
   band_size : int;
   band_depth : int;
   band_low : int;
-  band_high : int;  (* interval end / interior extent *)
-  band_limit : int;  (* next component's first ticket / own head order *)
-  band_next_head : int;  (* `Overlap: the next component's head, else -1 *)
+  band_high : int; (* interval end / interior extent *)
+  band_limit : int; (* next component's first ticket / own head order *)
+  band_next_head : int; (* `Overlap: the next component's head, else -1 *)
 }
 
 type decomposition = {
-  orders : int array;  (* every vertex *)
-  heads : bool array;  (* loop heads, including self-loop vertices *)
-  head_orders : int array;  (* -1: none *)
-  top_components : int array array;  (* in decomposition order *)
+  orders : int array; (* every vertex *)
+  heads : bool array; (* loop heads, including self-loop vertices *)
+  head_orders : int array; (* -1: none *)
+  top_components : int array array; (* in decomposition order *)
   component_count : int;
   tied_component_count : int;
   band_violations : band_violation list;
@@ -428,7 +466,11 @@ type decomposition = {
 let band_check orders head_orders sccs owner (records : band_record array) =
   let n = Array.length records in
   let interior = Array.make n min_int in
-  Array.iteri (fun v o -> let r = owner.(v) in if r >= 0 && o > interior.(r) then interior.(r) <- o) orders;
+  Array.iteri
+    (fun v o ->
+      let r = owner.(v) in
+      if r >= 0 && o > interior.(r) then interior.(r) <- o)
+    orders;
   let extent = Array.make n 0 in
   let violations = ref [] in
   for r = n - 1 downto 0 do
@@ -436,28 +478,51 @@ let band_check orders head_orders sccs owner (records : band_record array) =
     extent.(r) <- max record.rec_head_order interior.(r);
     if interior.(r) > record.rec_head_order then
       violations :=
-        { band_kind = `Inner_overflow; band_head = record.rec_head; band_size = record.rec_size;
-          band_depth = record.rec_depth; band_low = record.rec_base; band_high = interior.(r);
-          band_limit = record.rec_head_order; band_next_head = -1 }
+        {
+          band_kind = `Inner_overflow;
+          band_head = record.rec_head;
+          band_size = record.rec_size;
+          band_depth = record.rec_depth;
+          band_low = record.rec_base;
+          band_high = interior.(r);
+          band_limit = record.rec_head_order;
+          band_next_head = -1;
+        }
         :: !violations;
     let p = record.rec_parent in
     if p >= 0 && extent.(r) > interior.(p) then interior.(p) <- extent.(r)
   done;
   let top_record = Array.make (Array.length sccs) (-1) in
-  Array.iteri (fun r record -> if record.rec_top >= 0 then top_record.(record.rec_top) <- r) records;
+  Array.iteri
+    (fun r record ->
+      if record.rec_top >= 0 then top_record.(record.rec_top) <- r)
+    records;
   let interval i =
     match top_record.(i) with
     | -1 ->
         let v = sccs.(i).(0) in
         (orders.(v), max orders.(v) head_orders.(v), v, 1)
-    | r -> (records.(r).rec_base, extent.(r), records.(r).rec_head, records.(r).rec_size)
+    | r ->
+        ( records.(r).rec_base,
+          extent.(r),
+          records.(r).rec_head,
+          records.(r).rec_size )
   in
   for i = 0 to Array.length sccs - 2 do
-    let lo, hi, h, size = interval i and next_lo, _, next_h, _ = interval (i + 1) in
+    let lo, hi, h, size = interval i
+    and next_lo, _, next_h, _ = interval (i + 1) in
     if next_lo <= hi then
       violations :=
-        { band_kind = `Overlap; band_head = h; band_size = size; band_depth = 0; band_low = lo;
-          band_high = hi; band_limit = next_lo; band_next_head = next_h }
+        {
+          band_kind = `Overlap;
+          band_head = h;
+          band_size = size;
+          band_depth = 0;
+          band_low = lo;
+          band_high = hi;
+          band_limit = next_lo;
+          band_next_head = next_h;
+        }
         :: !violations
   done;
   List.rev !violations
@@ -467,17 +532,23 @@ let last_band_violations : band_violation list ref = ref []
 
 let string_of_band_violation name v =
   Printf.sprintf "kind=%s head=%s size=%d depth=%d interval=[%d,%d] limit=%d%s"
-    (match v.band_kind with `Overlap -> "top-overlap" | `Inner_overflow -> "inner-overflow")
-    (name v.band_head) v.band_size v.band_depth v.band_low v.band_high v.band_limit
+    (match v.band_kind with
+    | `Overlap -> "top-overlap"
+    | `Inner_overflow -> "inner-overflow")
+    (name v.band_head) v.band_size v.band_depth v.band_low v.band_high
+    v.band_limit
     (if v.band_next_head >= 0 then " next=" ^ name v.band_next_head else "")
 
 (* [successors.(v)]: ascending, duplicate-free.  [touched.(v)]: [v] is an
    endpoint of some edge.  Untouched vertices get trailing orders in
    ascending number. *)
-let decompose ?(call_first = false) ?(is_call = fun _ -> false) ?left_out successors touched =
+let decompose ?(call_first = false) ?(is_call = fun _ -> false) ?left_out
+    successors touched =
   let count = Array.length successors in
   let t = make count successors in
-  let member_count = Array.fold_left (fun n b -> if b then n + 1 else n) 0 touched in
+  let member_count =
+    Array.fold_left (fun n b -> if b then n + 1 else n) 0 touched
+  in
   let members = Array.make member_count 0 and next = ref 0 in
   for i = 0 to count - 1 do
     if touched.(i) then begin
@@ -485,18 +556,25 @@ let decompose ?(call_first = false) ?(is_call = fun _ -> false) ?left_out succes
       incr next
     end
   done;
-  let components = components_of t ~descending:false members (fun _ -> true) (-1) in
-  let sccs = Array.init (Array.length components) (fun i -> components.(Array.length components - 1 - i)) in
+  let components =
+    components_of t ~descending:false members (fun _ -> true) (-1)
+  in
+  let sccs =
+    Array.init (Array.length components) (fun i ->
+        components.(Array.length components - 1 - i))
+  in
   let component_count = ref 0 and tied = ref 0 in
   let entry_sensitive = ref [] in
   let orders, heads, head_orders, _, owner, records =
-    order_arrays ?left_out ~entry_sensitive t ~descending_members:true ~call_first ~is_call
-      ~components:component_count ~tied sccs
+    order_arrays ?left_out ~entry_sensitive t ~descending_members:true
+      ~call_first ~is_call ~components:component_count ~tied sccs
   in
   (* before the trailing (edge-free) vertices are numbered: they have no
      edge, so their tickets cannot order any propagation *)
   let band_violations = band_check orders head_orders sccs owner records in
-  Array.iteri (fun i succ -> if Array.exists (( = ) i) succ then heads.(i) <- true) successors;
+  Array.iteri
+    (fun i succ -> if Array.exists (( = ) i) succ then heads.(i) <- true)
+    successors;
   let highest = Array.fold_left max 0 orders in
   let next = ref (highest + 1) in
   Array.iteri
@@ -507,7 +585,15 @@ let decompose ?(call_first = false) ?(is_call = fun _ -> false) ?left_out succes
       end)
     orders;
   let d =
-    { orders; heads; head_orders; top_components = sccs; component_count = !component_count;
-      tied_component_count = !tied; band_violations; entry_sensitive = List.rev !entry_sensitive }
+    {
+      orders;
+      heads;
+      head_orders;
+      top_components = sccs;
+      component_count = !component_count;
+      tied_component_count = !tied;
+      band_violations;
+      entry_sensitive = List.rev !entry_sensitive;
+    }
   in
   d

@@ -7,8 +7,8 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Frontend *)
 open Sparrow_cil
+(** Frontend *)
 
 val files : string list ref
 val marshal_file : string ref

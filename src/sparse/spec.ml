@@ -8,8 +8,7 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-module type S =
-sig
+module type S = sig
   module Dom : InstrumentedMem.S
 
   type t = {
@@ -22,11 +21,11 @@ sig
     unsound_update : bool;
     unsound_bitwise : bool;
   }
+
   val empty : t
 end
 
-module Make(Dom: InstrumentedMem.S) =
-struct
+module Make (Dom : InstrumentedMem.S) = struct
   module Dom = Dom
   module PowLoc = Dom.PowA
 
@@ -39,16 +38,16 @@ struct
     unsound_lib : string BatSet.t;
     unsound_update : bool;
     unsound_bitwise : bool;
-
   }
 
-  let empty = {
-    locset = Dom.PowA.bot;
-    locset_fs = Dom.PowA.bot;
-    ptrinfo = ItvDom.Table.empty;
-    premem = Dom.bot;
-    unsound_lib = BatSet.empty;
-    unsound_update = false;
-    unsound_bitwise = false;
-  }
+  let empty =
+    {
+      locset = Dom.PowA.bot;
+      locset_fs = Dom.PowA.bot;
+      ptrinfo = ItvDom.Table.empty;
+      premem = Dom.bot;
+      unsound_lib = BatSet.empty;
+      unsound_update = false;
+      unsound_bitwise = false;
+    }
 end

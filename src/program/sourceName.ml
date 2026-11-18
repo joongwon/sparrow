@@ -22,16 +22,20 @@
    appends. *)
 
 let clear () = ()
-
 let install_from_merge () = ()
 
 let source_name name =
   match String.rindex_opt name '_' with
-  | Some i when i >= 2 && i < String.length name - 1 && String.sub name (i - 2) 3 = "___"
-                && String.for_all (function '0'..'9' -> true | _ -> false)
-                     (String.sub name (i + 1) (String.length name - i - 1)) ->
-    String.sub name 0 (i - 2)
+  | Some i
+    when i >= 2
+         && i < String.length name - 1
+         && String.sub name (i - 2) 3 = "___"
+         && String.for_all
+              (function '0' .. '9' -> true | _ -> false)
+              (String.sub name (i + 1) (String.length name - i - 1)) ->
+      String.sub name 0 (i - 2)
   | _ -> name
 
 let of_varinfo (v : Sparrow_cil.varinfo) =
-  if v.Sparrow_cil.vglob then source_name v.Sparrow_cil.vname else v.Sparrow_cil.vname
+  if v.Sparrow_cil.vglob then source_name v.Sparrow_cil.vname
+  else v.Sparrow_cil.vname

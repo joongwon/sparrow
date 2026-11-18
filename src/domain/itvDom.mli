@@ -13,7 +13,11 @@ module Val : sig
   include AbsDom.CPO
 
   val null : t
-  val make : (Itv.t * BasicDom.PowLoc.t * ArrayBlk.t * StructBlk.t * BasicDom.PowProc.t) -> t
+
+  val make :
+    Itv.t * BasicDom.PowLoc.t * ArrayBlk.t * StructBlk.t * BasicDom.PowProc.t ->
+    t
+
   val itv_of_val : t -> Itv.t
   val pow_loc_of_val : t -> BasicDom.PowLoc.t
   val array_of_val : t -> ArrayBlk.t
@@ -31,13 +35,18 @@ module Val : sig
   val external_value : BasicDom.Allocsite.t -> t
   val itv_top : t
   val cast : Sparrow_cil.typ -> Sparrow_cil.typ -> t -> t
+
   val cast_with_layout :
     (Sparrow_cil.compinfo -> Sparrow_cil.compinfo) ->
-    Sparrow_cil.typ -> Sparrow_cil.typ -> t -> t
+    Sparrow_cil.typ ->
+    Sparrow_cil.typ ->
+    t ->
+    t
 end
 
 module Mem : sig
   include InstrumentedMem.S
+
   val lookup : BasicDom.PowLoc.t -> t -> Val.t
   val normalize_store_value : BasicDom.Loc.t -> Val.t -> Val.t
   val observe_lookup : BasicDom.PowLoc.t -> t -> unit
@@ -45,9 +54,13 @@ module Mem : sig
   val strong_update : BasicDom.PowLoc.t -> Val.t -> t -> t
   val weak_update : BasicDom.PowLoc.t -> Val.t -> t -> t
   val observe_update : weak:bool -> BasicDom.PowLoc.t -> unit
-end with type A.t = BasicDom.Loc.t and type B.t = Val.t and type PowA.t = BasicDom.PowLoc.t
+end
+with type A.t = BasicDom.Loc.t
+ and type B.t = Val.t
+ and type PowA.t = BasicDom.PowLoc.t
 
-module Table : MapDom.CPO with
-  type t = MapDom.MakeCPO(BasicDom.Node)(Mem).t
-  and type A.t = BasicDom.Node.t
-  and type B.t = Mem.t
+module Table :
+  MapDom.CPO
+    with type t = MapDom.MakeCPO(BasicDom.Node)(Mem).t
+     and type A.t = BasicDom.Node.t
+     and type B.t = Mem.t

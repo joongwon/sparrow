@@ -8,16 +8,22 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Basic abstract domains *)
 open AbsDom
+(** Basic abstract domains *)
 
 module Node = InterCfg.Node
-module PowNode : PowDom.CPO with type t = PowDom.MakeCPO(Node).t and type elt = Node.t
+
+module PowNode :
+  PowDom.CPO with type t = PowDom.MakeCPO(Node).t and type elt = Node.t
+
 module Proc = InterCfg.Proc
-module PowProc : PowDom.CPO with type t = PowDom.MakeCPO(Proc).t and type elt = Proc.t
+
+module PowProc :
+  PowDom.CPO with type t = PowDom.MakeCPO(Proc).t and type elt = Proc.t
 
 module Allocsite : sig
   include AbsDom.SET
+
   val allocsite_of_node : Node.t -> t
   val allocsite_of_string : Node.t -> t
   val is_string_allocsite : t -> bool
@@ -28,10 +34,16 @@ module Allocsite : sig
 end
 
 module Loc : sig
-  type t = GVar of string * Sparrow_cil.typ | LVar of Proc.t * string * Sparrow_cil.typ | Allocsite of Allocsite.t
-  | Field of t * field * Sparrow_cil.typ
+  type t =
+    | GVar of string * Sparrow_cil.typ
+    | LVar of Proc.t * string * Sparrow_cil.typ
+    | Allocsite of Allocsite.t
+    | Field of t * field * Sparrow_cil.typ
+
   and field = string
+
   include AbsDom.SET with type t := t
+
   val null : t
   val dummy : t
   val is_var : t -> bool
@@ -42,6 +54,7 @@ module Loc : sig
   val is_field : t -> bool
   val of_gvar : string -> Sparrow_cil.typ -> t
   val of_lvar : Proc.t -> string -> Sparrow_cil.typ -> t
+
   (* Builds [Field (base, name, typ)] with the type the caller passes.
      [compare] identifies it by base, name and [Sparrow_cil.typeSig typ]. *)
   val append_field : t -> field -> Sparrow_cil.typ -> t
@@ -50,15 +63,19 @@ module Loc : sig
   val is_local_of : Proc.t -> t -> bool
   val get_proc : t -> Proc.t
   val typ : t -> Sparrow_cil.typ option
+
   (* bytes equal iff the types' signatures are equal (a field's type key) *)
   val type_key : Sparrow_cil.typ -> string
 end
 
 module PowLoc : sig
   include PowDom.CPO
+
   val null : t
   val prune : Sparrow_cil.binop -> t -> Sparrow_cil.exp -> t
   val append_field : t -> Sparrow_cil.fieldinfo -> t
-end with type t = PowDom.MakeCPO(Loc).t and type elt = Loc.t
+end
+with type t = PowDom.MakeCPO(Loc).t
+ and type elt = Loc.t
 
 module Dump : MapDom.CPO with type A.t = Proc.t and type B.t = PowLoc.t

@@ -10,11 +10,10 @@
 (***********************************************************************)
 (** Powset domain *)
 
-module type CPO =
-sig
+module type CPO = sig
   include AbsDom.CPO
-  type elt
 
+  type elt
 
   val empty : t
   val filter : (elt -> bool) -> t -> t
@@ -22,24 +21,18 @@ sig
   val fold2 : (elt -> elt -> 'a -> 'a) -> t -> t -> 'a -> 'a
   val map : (elt -> elt) -> t -> t
   val iter : (elt -> unit) -> t -> unit
-
   val singleton : elt -> t
   val subset : t -> t -> bool
   val cardinal : t -> int
-
   val mem : elt -> t -> bool
-
   val add : elt -> t -> t
   val diff : t -> t -> t
-
   val choose : t -> elt
-
   val remove : elt -> t -> t
-
   val is_empty : t -> bool
-
   val union : t -> t -> t
   val union_small_big : t -> t -> t
+
   (* [union] and [inter] without hash-consing, for sets that are not kept *)
   val union_unshared : t -> t -> t
   val inter_unshared : t -> t -> t
@@ -50,11 +43,12 @@ sig
   val elements : t -> elt list
 end
 
-module type LAT =
-sig
+module type LAT = sig
   include AbsDom.LAT
   include CPO with type t := t
 end
 
-module MakeCPO (A:AbsDom.SET) : CPO with type elt = A.t and type t = BatSet.Make(A).t
-module MakeLAT (A:AbsDom.SET) : LAT with type elt = A.t
+module MakeCPO (A : AbsDom.SET) :
+  CPO with type elt = A.t and type t = BatSet.Make(A).t
+
+module MakeLAT (A : AbsDom.SET) : LAT with type elt = A.t
