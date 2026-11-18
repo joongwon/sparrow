@@ -136,7 +136,6 @@ let rec collect : IntraCfg.cmd -> t list =
  fun cmd ->
   match cmd with
   | Cmd.Cset (lv, e, loc) -> c_lv lv loc @ c_exp e loc
-  | Cmd.Cexternal (lv, loc) -> c_lv lv loc
   | Cmd.Calloc (lv, Array e, _, loc) when !Options.taint ->
       [ AllocSize (e, loc) ]
   | Cmd.Calloc (lv, Array e, _, loc) -> c_lv lv loc @ c_exp e loc

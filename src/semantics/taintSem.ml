@@ -326,7 +326,6 @@ let run_cmd mode node cmd itvmem (mem, global) =
   | IntraCfg.Cmd.Cset (l, e, loc) ->
       let lv = ItvSem.eval_lv pid l itvmem in
       update mode global lv (eval pid e itvmem mem) mem
-  | IntraCfg.Cmd.Cexternal (l, _) -> mem
   | IntraCfg.Cmd.Calloc (l, IntraCfg.Cmd.Array e, is_static, loc) ->
       let _ = eval pid e itvmem mem in
       (* for inspection *)

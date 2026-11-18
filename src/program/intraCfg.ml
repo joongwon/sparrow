@@ -63,7 +63,6 @@ module Cmd = struct
     | CLoop of location
     (* final graph has the following cmds only *)
     | Cset of lval * exp * location
-    | Cexternal of lval * location
     | Calloc of lval * alloc * static * location
     | Csalloc of lval * string * location
     | Cfalloc of lval * fundec * location
@@ -96,7 +95,6 @@ module Cmd = struct
     match c with
     | Cinstr instrs -> s_instrs instrs
     | Cset (lv, e, _) -> "set(" ^ s_lv lv ^ "," ^ s_exp e ^ ")"
-    | Cexternal (lv, _) -> "extern(" ^ s_lv lv ^ ")"
     | Calloc (lv, Array e, _, _) -> "alloc(" ^ s_lv lv ^ ",[" ^ s_exp e ^ "])"
     | Calloc (lv, Struct compinfo, _, _) ->
         "alloc(" ^ s_lv lv ^ ",{" ^ compinfo.cname ^ "})"
@@ -118,7 +116,6 @@ module Cmd = struct
    fun c ->
     match c with
     | Cset (_, _, l)
-    | Cexternal (_, l)
     | Calloc (_, _, _, l)
     | Csalloc (_, _, l)
     | Cfalloc (_, _, l)
@@ -2140,7 +2137,6 @@ let finish_global_provenance ~unreachable g =
       in
       match find_cmd node g with
       | Cmd.Cset (lvalue, _, _)
-      | Cmd.Cexternal (lvalue, _)
       | Cmd.Calloc (lvalue, _, _, _)
       | Cmd.Csalloc (lvalue, _, _)
       | Cmd.Cfalloc (lvalue, _, _) ->

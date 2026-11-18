@@ -79,8 +79,6 @@ let run :
       match InterCfg.cmdof global.icfg node with
       | IntraCfg.Cmd.Cset (l, e, _) ->
           (Sem.assign mode spec global.callgraph pid l e mem, global)
-      | IntraCfg.Cmd.Cexternal (l, _) ->
-          (Sem.external_store mode spec global.callgraph pid l mem, global)
       | IntraCfg.Cmd.Calloc (l, IntraCfg.Cmd.Array e, is_static, _) ->
           ( Sem.array_assign mode spec global.callgraph node l e is_static mem,
             global )

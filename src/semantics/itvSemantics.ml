@@ -285,18 +285,6 @@ let assume mode spec callgraph pid e mem =
   ignore (eval spec pid e mem);
   prune mode spec callgraph pid e mem
 
-let external_store mode spec callgraph pid lv mem =
-  match typeOfLval lv with
-  | TInt _ | TFloat _ ->
-      update mode spec callgraph (eval_lv spec pid lv mem) (Val.of_itv Itv.top)
-        mem
-  | _ ->
-      let site = Allocsite.allocsite_of_ext None in
-      let v = Val.external_value site in
-      let ext = PowLoc.singleton (Loc.of_allocsite site) in
-      let mem = update mode spec callgraph (eval_lv spec pid lv mem) v mem in
-      update mode spec callgraph ext v mem
-
 (* [formals] gives the formal locations of a procedure. *)
 let formal_groups formals targets =
   PowProc.fold

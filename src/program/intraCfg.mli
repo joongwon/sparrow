@@ -34,7 +34,6 @@ module Cmd : sig
     | CLoop of Sparrow_cil.location
     (* final graph has the following cmds only *)
     | Cset of Sparrow_cil.lval * Sparrow_cil.exp * Sparrow_cil.location
-    | Cexternal of Sparrow_cil.lval * Sparrow_cil.location
     | Calloc of Sparrow_cil.lval * alloc * static * Sparrow_cil.location
     | Csalloc of Sparrow_cil.lval * string * Sparrow_cil.location
     | Cfalloc of Sparrow_cil.lval * Sparrow_cil.fundec * Sparrow_cil.location

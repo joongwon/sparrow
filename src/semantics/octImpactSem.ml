@@ -326,19 +326,6 @@ let rec run_cmd mode node cmd ptrmem (mem, global) =
   | IntraCfg.Cmd.Cset (l, e, _) ->
       let lv = ItvSem.eval_lv pid l ptrmem |> PowOctLoc.of_locs in
       set mode global ptrmem pid lv e mem
-  | IntraCfg.Cmd.Cexternal (l, _) ->
-      let lv = ItvSem.eval_lv pid l ptrmem in
-      let oct_lv = PowOctLoc.of_locs lv in
-      let arr_val, arr_size =
-        ItvDom.Mem.lookup lv ptrmem
-        |> ItvDom.Val.array_of_val |> tuple
-        |> Tuple2.map ArrayBlk.pow_loc_of_array ArrayBlk.allocsites_of_array
-        |> Tuple2.map PowOctLoc.of_locs PowOctLoc.of_sizes
-      in
-      mem
-      |> forget mode global pid oct_lv
-      |> forget mode global pid arr_val
-      |> forget mode global pid arr_size
   | IntraCfg.Cmd.Calloc (l, IntraCfg.Cmd.Array e, is_static, _) ->
       let lv = ItvSem.eval_lv pid l ptrmem |> PowOctLoc.of_locs in
       let ptrs =
