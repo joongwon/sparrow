@@ -39,12 +39,6 @@ val eval :
   ItvDom.Mem.t ->
   ItvDom.Val.t
 
-(* The same primitives [eval] uses, for other interpreters of the transfer. *)
-val eval_uop : Spec.t -> Sparrow_cil.unop -> ItvDom.Val.t -> ItvDom.Val.t
-
-val eval_bop :
-  Spec.t -> Sparrow_cil.binop -> ItvDom.Val.t -> ItvDom.Val.t -> ItvDom.Val.t
-
 val eval_array_alloc :
   ?spec:Spec.t ->
   BasicDom.Node.t ->
