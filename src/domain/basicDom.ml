@@ -198,10 +198,7 @@ module Field_type_signature = struct
 
   let ways = 4
   let sets = 1024
-
-  let table : entry array =
-    Array.init (ways * sets) (fun _ -> Ephemeron.K1.create ())
-
+  let table : entry option array = Array.make (ways * sets) None
   let next = Array.make sets 0
 
   let compute t =
@@ -209,14 +206,13 @@ module Field_type_signature = struct
     let rec find way =
       if way = ways then None
       else
-        let entry = Array.unsafe_get table (base + way) in
-        match Ephemeron.K1.get_key entry with
-        | Some key when key == t -> (
-            match Ephemeron.K1.get_data entry with
-            | Some (snapshot, signature) when unchanged snapshot t ->
-                Some signature
-            | _ -> None)
-        | _ -> find (way + 1)
+        match Array.unsafe_get table (base + way) with
+        | None -> find (way + 1)
+        | Some entry -> (
+            match Ephemeron.K1.query entry t with
+            | Some (snapshot, signature) ->
+                if unchanged snapshot t then Some signature else None
+            | None -> find (way + 1))
     in
     match find 0 with
     | Some signature -> signature
@@ -226,9 +222,9 @@ module Field_type_signature = struct
         | acc ->
             let set = base / ways in
             let way = next.(set) in
-            let entry = table.(base + way) in
-            Ephemeron.K1.set_key entry t;
-            Ephemeron.K1.set_data entry (Array.of_list (List.rev acc), signature);
+            table.(base + way) <-
+              Some
+                (Ephemeron.K1.make t (Array.of_list (List.rev acc), signature));
             next.(set) <- (way + 1) mod ways
         | exception Unmemoizable -> ());
         signature
