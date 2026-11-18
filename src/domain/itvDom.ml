@@ -64,7 +64,7 @@ module Val = struct
   let itv_top : t =
     (Itv.top, PowLoc.bot, ArrayBlk.bot, StructBlk.bot, PowProc.bot)
 
-  let cast_with_layout resolve_comp from_typ to_typ v =
+  let cast from_typ to_typ v =
     let from_typ, to_typ =
       BatTuple.Tuple2.mapn Sparrow_cil.unrollTypeDeep (from_typ, to_typ)
     in
@@ -73,12 +73,7 @@ module Val = struct
       null
     else if Sparrow_cil.isIntegralType to_typ then
       v |> itv_of_val |> Itv.cast from_typ to_typ |> of_itv
-    else
-      v |> array_of_val
-      |> ArrayBlk.cast_array_with_layout resolve_comp to_typ
-      |> flip modify_arr v
-
-  let cast = cast_with_layout Fun.id
+    else v |> array_of_val |> ArrayBlk.cast_array to_typ |> flip modify_arr v
 
   let to_string x =
     "("
@@ -117,29 +112,11 @@ module Mem = struct
 
   let lookup locs mem = lookup_from ~observed:mem locs mem
 
-  (* Record a read of [locs] in [mem] without computing its value, for a
-     client that takes the value from another version of the memory; the
-     use belongs to [mem].  No access scope is created or replaced here. *)
-  let observe_lookup locs mem =
-    if not (eq mem bot) then PowLoc.iter (fun loc -> observe_read loc mem) locs
-
   let strong_update : PowLoc.t -> Val.t -> t -> t =
    fun locs v mem -> PowLoc.fold (fun x -> add x v) locs mem
 
   let weak_update : PowLoc.t -> Val.t -> t -> t =
    fun locs v mem -> PowLoc.fold (fun x -> weak_add x v) locs mem
-
-  (* Record the accesses of a store without performing it.  Normalization
-     queries precede each write just as in [add]/[weak_add]. Their type
-     decision is independent of the value; interval projection/injection are
-     total. No resulting memory or changed-memory observer may be demanded
-     at this endpoint. *)
-  let observe_update ~weak locs =
-    PowLoc.iter
-      (fun location ->
-        ignore (normalize_store_value location Val.bot);
-        observe_write ~weak location)
-      locs
 end
 
 module Table = MapDom.MakeCPO (Node) (Mem)

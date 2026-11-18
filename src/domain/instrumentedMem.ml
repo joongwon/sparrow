@@ -30,7 +30,6 @@ module type S = sig
   val init_access : unit -> unit
   val return_access : unit -> Access.info
   val observe_read : A.t -> t -> unit
-  val observe_write : weak:bool -> A.t -> unit
   val find_unobserved : A.t -> t -> B.t
   val start_read_log : unit -> unit
   val stop_read_log : unit -> PowA.t read_log

@@ -183,11 +183,9 @@ let is_unsigned : Sparrow_cil.typ -> bool = function
 (* NOTE : Sparrow_cil.bitsSizeOf often fails: just return top for the moment
  * Adhoc solution: To avoid this failure, translate original C sources
  * into "CIL" (using -il option) and analyze the CIL program. *)
-let byteSizeOf_with_layout _resolve_comp typ =
+let byteSizeOf typ =
   try Sparrow_cil.bitsSizeOf typ / 8
   with e ->
     if !Options.verbose >= 2 then
       prerr_endline ("warn: Sparrow_cil.bitsSizeOf (" ^ s_type typ ^ ")");
     raise e
-
-let byteSizeOf = byteSizeOf_with_layout Fun.id

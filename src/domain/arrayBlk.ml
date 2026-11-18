@@ -118,12 +118,11 @@ module ArrInfo = struct
 
   let resize orig_st new_st x = Itv.divide (Itv.times x orig_st) new_st
 
-  let cast_with_layout resolve_comp typ arr =
+  let cast typ arr =
     match typ with
     | Sparrow_cil.TPtr ((Sparrow_cil.TComp (comp, _) as t'), _) ->
         let new_stride =
-          try CilHelper.byteSizeOf_with_layout resolve_comp t' |> Itv.of_int
-          with _ -> Itv.top
+          try CilHelper.byteSizeOf t' |> Itv.of_int with _ -> Itv.top
         in
         {
           offset = resize arr.stride new_stride arr.offset;
@@ -134,8 +133,7 @@ module ArrInfo = struct
         }
     | Sparrow_cil.TPtr (t', _) | Sparrow_cil.TArray (t', _, _) ->
         let new_stride =
-          try CilHelper.byteSizeOf_with_layout resolve_comp t' |> Itv.of_int
-          with _ -> Itv.top
+          try CilHelper.byteSizeOf t' |> Itv.of_int with _ -> Itv.top
         in
         {
           arr with
@@ -201,14 +199,12 @@ let set_null_pos : t -> Itv.t -> t =
 let plus_null_pos : t -> Itv.t -> t =
  fun arr i -> map (fun a -> ArrInfo.plus_null_pos a i) arr
 
-let cast_array_with_layout resolve_comp typ a =
+let cast_array typ a =
   mapi
     (fun allocsite ->
-      if Allocsite.is_cmd_arg allocsite then id
-      else ArrInfo.cast_with_layout resolve_comp typ)
+      if Allocsite.is_cmd_arg allocsite then id else ArrInfo.cast typ)
     a
 
-let cast_array = cast_array_with_layout Fun.id
 let allocsites_of_array a = foldi (fun k _ -> BatSet.add k) a BatSet.empty
 
 let pow_loc_of_array : t -> PowLoc.t =

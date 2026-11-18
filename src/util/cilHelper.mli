@@ -32,6 +32,3 @@ val remove_cast : Sparrow_cil.exp -> Sparrow_cil.exp
 val remove_coeff : Sparrow_cil.exp -> Sparrow_cil.exp
 val is_unsigned : Sparrow_cil.typ -> bool
 val byteSizeOf : Sparrow_cil.typ -> int
-
-val byteSizeOf_with_layout :
-  (Sparrow_cil.compinfo -> Sparrow_cil.compinfo) -> Sparrow_cil.typ -> int
