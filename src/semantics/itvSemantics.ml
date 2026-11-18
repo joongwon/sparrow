@@ -207,16 +207,14 @@ let eval_const = function
   | CStr _ | CWStr _ | CEnum _ -> Val.of_itv Itv.top
 let size_of_with_layout resolve_comp query = Val.of_itv
   (try Itv.of_int (CilHelper.byteSizeOf_with_layout resolve_comp (query ())) with
-   | Layout_resolution_failure _ as failure -> raise failure
    | _ -> Itv.pos)
 let size_of = size_of_with_layout Fun.id
 let size_of_exp = size_of
 let align_of_with_layout resolve_comp query =
-  Val.of_itv (Itv.of_int (alignOf_int_with_layout resolve_comp (query ())))
+  Val.of_itv (Itv.of_int (alignOf_int (query ())))
 let align_of = align_of_with_layout Fun.id
 let cast_with_layout resolve_comp query target v =
   try Val.cast_with_layout resolve_comp (query ()) (target ()) v with
-  | Layout_resolution_failure _ as failure -> raise failure
   | _ -> v
 let cast = cast_with_layout Fun.id
 let pruned_value v i p =
@@ -241,7 +239,6 @@ let named_external_site name = Allocsite.allocsite_of_ext (Some name)
 let alloc_one_size_with_layout resolve_comp declared_type = try
   let typ = match declared_type () with TFun(TPtr(t,_),_,_,_) -> t | _ -> assert false in
   Itv.of_int(CilHelper.byteSizeOf_with_layout resolve_comp typ) with
-  | Layout_resolution_failure _ as failure -> raise failure
   | _ -> Itv.top
 let alloc_one_size = alloc_one_size_with_layout Fun.id
 let arithmetic_lvalue query = isArithmeticType(unrollTypeDeep(query ()))

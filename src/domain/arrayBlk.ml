@@ -88,7 +88,6 @@ struct
     match typ with
       Sparrow_cil.TPtr ((Sparrow_cil.TComp (comp, _) as t'), _) ->
         let new_stride = try CilHelper.byteSizeOf_with_layout resolve_comp t' |> Itv.of_int with
-          | Sparrow_cil.Layout_resolution_failure _ as failure -> raise failure
           | _ -> Itv.top in
         { offset = resize arr.stride new_stride arr.offset;
           size = resize arr.stride new_stride arr.size;
@@ -97,7 +96,6 @@ struct
           structure = PowStruct.add comp.Sparrow_cil.cname arr.structure }
     | Sparrow_cil.TPtr (t', _) | Sparrow_cil.TArray (t', _, _) ->
         let new_stride = try CilHelper.byteSizeOf_with_layout resolve_comp t' |> Itv.of_int with
-          | Sparrow_cil.Layout_resolution_failure _ as failure -> raise failure
           | _ -> Itv.top in
         { arr with
             offset = resize arr.stride new_stride arr.offset;

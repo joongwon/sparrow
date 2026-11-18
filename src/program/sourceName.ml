@@ -17,26 +17,21 @@
    [Global.is_undef]) is still the merged name: that is the identity of the
    merged program, not a recognition by name.
 
-   The table is the merge's own record (Mergecil.renamed_globals).  It is
-   installed after a merge of several units and cleared by every parse of a
-   single unit (Frontend.parseOneFile), so a unit analysed alone, which no
-   merge renamed, uses its names as they are. *)
+   goblint-cil does not export the merge's record of the names it changed,
+   so the source name is the merged name without the suffix [___N] the merge
+   appends. *)
 
-let table : (string, string) Hashtbl.t = Hashtbl.create 64
+let clear () = ()
 
-let clear () = Hashtbl.reset table
+let install_from_merge () = ()
 
-let install_from_merge () =
-  Hashtbl.reset table;
-  List.iter
-    (fun (merged, (_, source)) ->
-      if merged <> source then Hashtbl.replace table merged source)
-    (Sparrow_cil.Mergecil.renamed_globals ())
+let source_name name =
+  match String.rindex_opt name '_' with
+  | Some i when i >= 2 && i < String.length name - 1 && String.sub name (i - 2) 3 = "___"
+                && String.for_all (function '0'..'9' -> true | _ -> false)
+                     (String.sub name (i + 1) (String.length name - i - 1)) ->
+    String.sub name 0 (i - 2)
+  | _ -> name
 
 let of_varinfo (v : Sparrow_cil.varinfo) =
-  if v.Sparrow_cil.vglob then
-    match Hashtbl.find_opt table v.Sparrow_cil.vname with
-    | Some source -> source
-    | None -> v.Sparrow_cil.vname
-  else v.Sparrow_cil.vname
-
+  if v.Sparrow_cil.vglob then source_name v.Sparrow_cil.vname else v.Sparrow_cil.vname
