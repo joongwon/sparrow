@@ -401,14 +401,6 @@ module Make (S : STAGE) = struct
       | "realloc" -> model_realloc mode spec cg node lvo expressions mem
       | "calloc" -> model_calloc mode spec cg node lvo expressions mem
       | _ -> scaffolded_functions mode spec cg node pid lvo f expressions mem)
-
-  (* The names undefined_call and scaffolded_functions give a model of their own; any other
-     name is model_unknown. *)
-  let modeled name =
-    List.mem name ["sparrow_arg"; "sparrow_opt"; "sparrow_print"; "sparrow_dump"; "sparrow_assume";
-      "sparrow_array_init"; "strlen"; "realloc"; "calloc"; "fgets"; "sprintf"; "scanf"; "getenv";
-      "strdup"; "gettext"; "memcpy"; "getpwent"; "strcpy"; "strcat"; "strncpy"; "strchr"; "strrchr"]
-    || List.mem name mem_alloc_libs || ApiSem.ApiMap.mem name ApiSem.api_map
 end
 
 module Direct=struct

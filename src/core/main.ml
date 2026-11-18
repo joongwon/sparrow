@@ -15,8 +15,6 @@ open Vocab
 
 let init_analysis = SparrowPipeline.pre_result
 
-let parse = Frontend.parse
-
 let print_pgm_info : Global.t -> Global.t
 = fun global ->
   let pids = InterCfg.pidsof global.icfg in
@@ -79,7 +77,7 @@ let main () =
   Sparrow_cil.initCIL ();
 
   try
-    StepManager.stepf true "Front-end" parse ()
+    StepManager.stepf true "Front-end" Frontend.parse ()
     |> Frontend.makeCFGinfo
     |> opt !Options.il print_il
     |> init_analysis

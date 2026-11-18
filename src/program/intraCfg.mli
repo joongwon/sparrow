@@ -22,78 +22,6 @@ end
 
 module NodeSet : BatSet.S with type elt = Node.t
 
-(** Where the lowering made a node, recorded only inside [Origin.record]. *)
-module Origin : sig
-  type part = Storage | Initializer
-  type branch = At of int | Then | Else | Body
-
-  (** The construction a node belongs to *)
-  type root =
-    | Entry
-    | Exit
-    | Statement of Node.t * branch list  (** a CIL statement, by its place in the body *)
-    | Function                           (** [init] outside the statements *)
-    | Local of int                       (** the storage of the k-th local *)
-    | Global of int * part               (** a part of the k-th global's construction *)
-    | Main                               (** the call of main *)
-
-  (** The rule that derived a node from the construction or node it was in *)
-  type rule =
-    | Assume of bool
-    | Return_site
-    | Noreturn_return
-    | Implicit_return
-    | Instruction
-    | Array
-    | Struct
-    | Init_loop of int
-    | Nested_array of int
-    | Field_cast
-    | Local_cast
-    | Dynamic_alloc of int
-    | String_alloc
-    | String_command of int
-    | Global_storage of int
-    | Global_initializer
-    | Function_value
-    | Argument of int
-    | Main_call
-    | Replacement
-    | Array_init
-
-  (** The derivation of a node: each step's rule, its rank among the nodes
-      the rule made in the same context, and the node it made. *)
-  type step = { rule : rule; rank : int; node : Node.t }
-  type t = { root : root; steps : step list }
-
-  (** The nodes in (first, limit] build a field's storage. *)
-  type field = { lvalue : Sparrow_cil.lval; first : int; limit : int }
-
-  (** A temporary the lowering declares, with the context it was made in and
-      the next node id at that point *)
-  type temporary = { variable : Sparrow_cil.varinfo; string : bool; context : t option; stamp : int }
-
-  type recording
-  val record : (recording -> 'a) -> 'a
-  val find : recording -> string -> Node.t -> t option
-  val fields : recording -> Sparrow_cil.fundec -> field list
-  val temporaries : recording -> Sparrow_cil.fundec -> temporary list
-
-  (** The node an origin names *)
-  val node : t -> Node.t
-
-  (** The order in which [init] and then [optimize] make the nodes of a
-      function; [global_creation ~rank] in the global procedure, where [rank]
-      is the place of the node's construction in [global_constructions]. *)
-  val creation : t -> int list
-  val global_creation : rank:int -> t -> int list
-
-  (** The order in which the lowering declares the temporaries of a function
-      and of the global procedure *)
-  val temporary_creation : temporary -> int list
-  val global_temporary_creation : rank:int -> temporary -> int list
-end
-
 module Cmd : sig
   type t =
   | Cinstr of Sparrow_cil.instr list
@@ -216,10 +144,6 @@ val generate_module_global_proc :
   Sparrow_cil.global list -> Sparrow_cil.fundec -> t
 val generate_global_proc : Sparrow_cil.global list -> Sparrow_cil.fundec -> t
 
-(** The constructions of the global procedure's chain in order: a global's
-    index and the part built.  [whole_program] as [generate_global_proc]. *)
-val global_constructions : whole_program:bool -> Sparrow_cil.global list -> (int * Origin.part) list
-
 (** The stock string-argument normalization ([Csalloc] nodes before a
     command), exported unchanged: a client that builds the units alone
     rebuilds a call's merged-program commands with it when the merged callee
@@ -263,7 +187,7 @@ val succ : node -> t -> node list
 (** {2 Graph Manipulation } *)
 
 val add_cmd : node -> cmd -> t -> t
-val add_new_node : ?rule:Origin.rule -> node -> cmd -> node -> t -> t
+val add_new_node : node -> cmd -> node -> t -> t
 val add_node_with_cmd : node -> cmd -> t -> t
 val add_edge : node -> node -> t -> t
 val remove_node : node -> t -> t
@@ -281,5 +205,3 @@ val parent_of_dom_tree : node -> t -> node option
 
 val print_dot : out_channel -> t -> unit
 val to_json : t -> Yojson.Safe.t
-
-val empty : Sparrow_cil.fundec -> t

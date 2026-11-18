@@ -65,168 +65,6 @@ end
 
 module NodeSet = BatSet.Make(Node)
 
-(* Where the lowering made a node: the construction it belongs to and the
-   rules that derived it.  Recorded only inside [Origin.record]. *)
-module Origin = struct
-  type part = Storage | Initializer
-  type branch = At of int | Then | Else | Body
-  type root =
-    | Entry
-    | Exit
-    | Statement of Node.t * branch list
-    | Function
-    | Local of int
-    | Global of int * part
-    | Main
-  type rule =
-    | Assume of bool
-    | Return_site
-    | Noreturn_return
-    | Implicit_return
-    | Instruction
-    | Array
-    | Struct
-    | Init_loop of int
-    | Nested_array of int
-    | Field_cast
-    | Local_cast
-    | Dynamic_alloc of int
-    | String_alloc
-    | String_command of int
-    | Global_storage of int
-    | Global_initializer
-    | Function_value
-    | Argument of int
-    | Main_call
-    | Replacement
-    | Array_init
-  type step = { rule : rule; rank : int; node : Node.t }
-  type t = { root : root; steps : step list }
-  type field = { lvalue : lval; first : int; limit : int }
-  type temporary = { variable : varinfo; string : bool; context : t option; stamp : int }
-
-  type recording = {
-    origins : (string * Node.t, t) Hashtbl.t;
-    fields : (string, fundec * field) Hashtbl.t;
-    temporaries : (string, fundec * temporary) Hashtbl.t;
-    mutable pid : string;
-    mutable context : t option;
-    mutable ranks : (rule, int) Hashtbl.t;
-  }
-  let active = ref None
-
-  let record f =
-    let r = { origins = Hashtbl.create 4096; fields = Hashtbl.create 16;
-              temporaries = Hashtbl.create 64; pid = ""; context = None;
-              ranks = Hashtbl.create 7 } in
-    let previous = !active in
-    active := Some r;
-    Fun.protect ~finally:(fun () -> active := previous) (fun () -> f r)
-
-  let find r pid n = Hashtbl.find_opt r.origins (pid, n)
-  let of_fundec table r fd =
-    List.rev (List.filter_map (fun (f, x) -> if f == fd then Some x else None)
-      (Hashtbl.find_all table fd.svar.vname))
-  let fields r = of_fundec r.fields r
-  let temporaries r = of_fundec r.temporaries r
-
-  let seed pid n root = match !active with
-    | Some r -> Hashtbl.replace r.origins (pid, n) { root; steps = [] }
-    | None -> ()
-
-  let enter pid context f = match !active with
-    | None -> f ()
-    | Some r ->
-      let pid' = r.pid and context' = r.context and ranks = r.ranks in
-      r.pid <- pid; r.context <- context; r.ranks <- Hashtbl.create 7;
-      Fun.protect ~finally:(fun () -> r.pid <- pid'; r.context <- context'; r.ranks <- ranks) f
-  let within pid root f = enter pid (Some { root; steps = [] }) f
-  let from pid n f = match !active with
-    | None -> f ()
-    | Some r -> enter pid (find r pid n) f
-
-  let derive rule =
-    let node = Node.make () in
-    (match !active with
-     | Some ({ context = Some o; _ } as r) ->
-       let rank = Option.value ~default:0 (Hashtbl.find_opt r.ranks rule) in
-       Hashtbl.replace r.ranks rule (rank + 1);
-       Hashtbl.replace r.origins (r.pid, node) { o with steps = o.steps @ [ { rule; rank; node } ] }
-     | _ -> ());
-    node
-
-  let temporary ~string fd typ =
-    let variable = makeTempVar fd typ in
-    (match !active with
-     | Some r ->
-       Hashtbl.add r.temporaries fd.svar.vname
-         (fd, { variable; string; context = r.context; stamp = Node.get_next_id () })
-     | None -> ());
-    variable
-
-  let field fd lvalue first = match !active with
-    | Some r -> Hashtbl.add r.fields fd.svar.vname (fd, { lvalue; first; limit = Node.get_next_id () })
-    | None -> ()
-
-  let root_node = function
-    | Statement (n, _) -> Some n
-    | Entry -> Some Node.ENTRY
-    | Exit -> Some Node.EXIT
-    | Function | Local _ | Global _ | Main -> None
-
-  (* The node an origin names *)
-  let node o = match List.rev o.steps with
-    | s :: _ -> s.node
-    | [] -> Option.get (root_node o.root)
-
-  let parent o = { o with steps = List.rev (List.tl (List.rev o.steps)) }
-
-  let string_rule = function String_alloc | String_command _ -> true | _ -> false
-  let return_rule = function Return_site | Noreturn_return -> true | _ -> false
-
-  (* The order in which [init] and then [optimize] make the nodes of a
-     procedure: the pass, then the place in the pass's traversal (in node
-     order, the calls of [insert_return_nodes] in decreasing order). *)
-  let rec creation o =
-    let id = Node.id (node o) in
-    match List.rev o.steps, o.root with
-    | s :: _, _ when return_rule s.rule -> 10 :: List.map (~-) (creation (parent o))
-    | _, Local k -> [ 2; k; id ]
-    | _, root ->
-      let rec scan above fallback = function
-        | s :: rest when string_rule s.rule ->
-          let above = Node.id (Option.get above) in
-          if List.exists (fun s -> s.rule = Array_init) rest then [ 12; 8; above; id ] else [ 8; above; id ]
-        | { rule = Array_init; _ } :: _ -> [ 12; 0; Node.id (Option.get above) ]
-        | { rule = Implicit_return; _ } :: _ -> [ 11; id ]
-        | ({ rule = Dynamic_alloc _ | Array | Struct | Init_loop _ | Nested_array _ | Field_cast; _ } as s)
-          :: rest -> scan (Some s.node) [ 7; id ] rest
-        | ({ rule = Instruction; _ } as s) :: rest -> scan (Some s.node) [ 5; id ] rest
-        | ({ rule = Assume _; _ } as s) :: rest -> scan (Some s.node) [ 4; id ] rest
-        | s :: rest -> scan (Some s.node) fallback rest
-        | [] -> fallback
-      in
-      scan (root_node root) (if root = Function then [ 1; id ] else [ 0; id ]) o.steps
-
-  (* The same order in the global procedure, whose chain constructions are
-     ranked by [global_constructions] (the call of main after them all) *)
-  let global_creation ~rank o =
-    let id = Node.id (node o) in
-    let has p = List.exists (fun s -> p s.rule) o.steps in
-    let strings = if has string_rule then 1 else 0 in
-    if has (( = ) Array_init) then [ 3; strings; rank; id ]
-    else if has return_rule then [ 2; - rank; id ]
-    else [ strings; rank; id ]
-
-  (* The order in which the lowering declares temporaries: the storage
-     temporaries as it goes, then those of [transform_string_allocs] by the
-     node whose strings they hold *)
-  let temporary_order t =
-    if t.string then (1, Node.id (node (Option.get t.context))) else (0, t.stamp)
-  let temporary_creation t = let kind, at = temporary_order t in [ kind; at ]
-  let global_temporary_creation ~rank t = let kind, at = temporary_order t in [ kind; rank; at ]
-end
-
 module Cmd = struct
   type t =
   | Cinstr of instr list
@@ -659,13 +497,9 @@ let remove_node : node -> t -> t
           dom_tree = G.remove_vertex g.dom_tree n }
 
 (* should be used only after all Sparrow_cil nodes are made *)
-let add_new_node : ?rule:Origin.rule -> node -> cmd -> node -> t -> t
-=fun ?rule n cmd s g ->
-  let rule = match rule, cmd with
-    | Some rule, _ -> rule
-    | None, Cmd.Creturn _ -> Origin.Implicit_return
-    | None, _ -> Origin.Return_site in
-  let new_node = Origin.from g.fd.svar.vname n (fun () -> Origin.derive rule) in
+let add_new_node : node -> cmd -> node -> t -> t
+=fun n cmd s g ->
+  let new_node = Node.make() in
     (add_cmd new_node cmd
      >>> remove_edge n s
      >>> add_edge n new_node
@@ -758,13 +592,13 @@ let generate_assumes : t -> t
               | _,t::l -> if t.sid = Node.id s2 then s1,s2 else s2,s1 in
             let tassert = Cmd.Cassume (e,loc) in
             let fassert = Cmd.Cassume (UnOp (LNot,e,Sparrow_cil.typeOf e),loc) in
-              (add_new_node ~rule:(Origin.Assume false) n fassert fbn
-              >>> add_new_node ~rule:(Origin.Assume true) n tassert tbn) g
+              (add_new_node n fassert fbn
+              >>> add_new_node n tassert tbn) g
           else (* XXX : when if-statement has only one successor.
                         seems to happen inside dead code *)
             let tbn = List.nth succs 0 in
             let tassert = Cmd.Cassume (e,loc) in
-              add_new_node ~rule:(Origin.Assume true) n tassert tbn g
+              add_new_node n tassert tbn g
       | _ -> g
     ) g g
   with _ -> assert (false)
@@ -808,8 +642,7 @@ let flatten_instructions : t -> t
           | Asm (a,b,c,d,e,f) -> Cmd.Casm (a,b,c,d,e,f)
           | VarDecl _ -> Cmd.Cskip
         ) instrs in
-      let pairs = Origin.from (get_pid g) n (fun () ->
-        List.map (fun c -> (Origin.derive Origin.Instruction, c)) cmds) in
+      let pairs = List.map (fun c -> (Node.make(),c)) cmds in
       let first,_ = List.nth pairs 0 in
       let last,_ = List.nth pairs (List.length pairs - 1) in
       let preds,succs = pred n g, succ n g in
@@ -830,21 +663,21 @@ let flatten_instructions : t -> t
 
 let make_array : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.typ -> Sparrow_cil.exp -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd lv typ exp loc entry g ->
-  let alloc_node = Origin.derive Origin.Array in
+  let alloc_node = Node.make () in
   let size = Sparrow_cil.BinOp (Sparrow_cil.Mult, Sparrow_cil.SizeOf typ, exp, Sparrow_cil.intType) in
   let alloc_cmd = Cmd.Calloc (lv, Cmd.Array size, true, loc) in
   (alloc_node, g |> add_cmd alloc_node alloc_cmd |> add_edge entry alloc_node)
 
 let make_struct : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.compinfo -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd lv comp loc entry g ->
-  let alloc_node = Origin.derive Origin.Struct in
+  let alloc_node = Node.make () in
   let alloc_cmd = Cmd.Calloc (lv, Cmd.Struct comp, true, loc) in
   (alloc_node, g |> add_cmd alloc_node alloc_cmd |> add_edge entry alloc_node)
 
 let make_init_loop ?(path = "type/unknown") fd lv exp loc entry f g =
   (* i = 0 *)
-  let init_node = Origin.derive (Origin.Init_loop 0) in
-  let idxinfo = Origin.temporary ~string:false fd (Sparrow_cil.TInt (IInt, [])) in
+  let init_node = Node.make () in
+  let idxinfo = Sparrow_cil.makeTempVar fd (Sparrow_cil.TInt (IInt, [])) in
   let idx = (Sparrow_cil.Var idxinfo, Sparrow_cil.NoOffset) in
   let init_value = Sparrow_cil.Const (Sparrow_cil.CInt (Sparrow_cil.Cilint.zero_cilint, IInt, None)) in
   let init_cmd = Cmd.Cset (idx, init_value, loc) in
@@ -854,16 +687,16 @@ let make_init_loop ?(path = "type/unknown") fd lv exp loc entry f g =
     ~role:Array_loop_index ~typ:idxinfo.Sparrow_cil.vtype
     ~payload:"zero-init" ~lvalue:idx (NodeSet.singleton init_node);
   (* while (i < exp) *)
-  let skip_node = Origin.derive (Origin.Init_loop 1) in
+  let skip_node = Node.make () in
   let g = add_cmd skip_node Cmd.Cskip g in
   let g = add_edge init_node skip_node g in
   let g = add_edge entry init_node g in
-  let assume_node = Origin.derive (Origin.Init_loop 2) in
+  let assume_node = Node.make () in
   let cond = Sparrow_cil.BinOp (Sparrow_cil.Lt, Sparrow_cil.Lval idx, exp, Sparrow_cil.intType) in
   let assume_cmd = Cmd.Cassume (cond, loc) in
   let g = add_cmd assume_node assume_cmd g in
   let g = add_edge skip_node assume_node g in
-  let nassume_node = Origin.derive (Origin.Init_loop 3) in
+  let nassume_node = Node.make () in
   let nassume_cmd = Cmd.Cassume (Sparrow_cil.UnOp (Sparrow_cil.LNot, cond, Sparrow_cil.intType), loc) in
   let g = add_cmd nassume_node nassume_cmd g in
   let g = add_edge skip_node nassume_node g in
@@ -871,7 +704,7 @@ let make_init_loop ?(path = "type/unknown") fd lv exp loc entry f g =
   (* loop body *)
   let (term, g) = f assume_node element g in
   (* i++ *)
-  let incr_node = Origin.derive (Origin.Init_loop 4) in
+  let incr_node = Node.make () in
   let incr_cmd = Cmd.Cset (idx, Sparrow_cil.BinOp (Sparrow_cil.PlusA, Sparrow_cil.Lval idx, Sparrow_cil.Const (Sparrow_cil.CInt (Sparrow_cil.Cilint.cilint_of_int64 Int64.one, IInt, None)), Sparrow_cil.intType), loc) in
   let g = add_cmd incr_node incr_cmd g in
   let g = add_edge term incr_node g in
@@ -885,7 +718,7 @@ let rec make_nested_array ?(path = "type/unknown") : Sparrow_cil.fundec -> Sparr
     TArray (t, Some size, _) ->
       let f assume_node element g =
         (* tmp = malloc(size); lv[i] = tmp *)
-        let tmp = (Sparrow_cil.Var (Origin.temporary ~string:false fd (Sparrow_cil.TPtr (Sparrow_cil.TVoid [], []))), Sparrow_cil.NoOffset) in
+        let tmp = (Sparrow_cil.Var (Sparrow_cil.makeTempVar fd (Sparrow_cil.TPtr (Sparrow_cil.TVoid [], []))), Sparrow_cil.NoOffset) in
         let (term, g) = make_array fd tmp t size loc assume_node g in
         record_construction_temp
           ~path:(path ^ "/nested-array/storage")
@@ -893,7 +726,7 @@ let rec make_nested_array ?(path = "type/unknown") : Sparrow_cil.fundec -> Sparr
           ~typ:(Sparrow_cil.typeOfLval tmp)
           ~payload:("extent:" ^ CilHelper.s_exp size) ~lvalue:tmp
           (NodeSet.singleton term);
-        let cast_node = Origin.derive (Origin.Nested_array 0) in
+        let cast_node = Node.make () in
         let cast_cmd = Cmd.Cset (element, Sparrow_cil.CastE (Explicit, TPtr (t, []), Sparrow_cil.Lval tmp), loc) in
         let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
         make_nested_array ~path:(path ^ "/nested-array") fd element t size
@@ -911,7 +744,7 @@ let rec make_nested_array ?(path = "type/unknown") : Sparrow_cil.fundec -> Sparr
   | _ when initialize ->
       let f assume_node element g =
         (* lv[i] = 0 *)
-        let init_node = Origin.derive (Origin.Nested_array 1) in
+        let init_node = Node.make () in
         let init_cmd = Cmd.Cset (element, Sparrow_cil.zero, loc) in
         (init_node, g |> add_cmd init_node init_cmd |> add_edge assume_node init_node)
       in
@@ -923,12 +756,11 @@ and generate_allocs_field ?(path = "type/unknown") : Sparrow_cil.fieldinfo list 
   match fl with
     [] -> (entry, g)
   | fieldinfo::t ->
-      let first = Node.get_next_id () in
-      let field = addOffsetLval (Sparrow_cil.Field (fieldinfo, Sparrow_cil.NoOffset)) lv in
       begin
       match Sparrow_cil.unrollTypeDeep fieldinfo.ftype with
       | TArray (typ, Some exp, _) ->
-          let tmp = (Sparrow_cil.Var (Origin.temporary ~string:false fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
+          let field = addOffsetLval (Sparrow_cil.Field (fieldinfo, Sparrow_cil.NoOffset)) lv in
+          let tmp = (Sparrow_cil.Var (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
           let (term, g) = make_array fd tmp typ exp fieldinfo.floc entry g in
           let field_path = path ^ "/field:" ^ fieldinfo.Sparrow_cil.fname in
           record_construction_temp
@@ -936,23 +768,22 @@ and generate_allocs_field ?(path = "type/unknown") : Sparrow_cil.fieldinfo list 
             ~role:Field_storage ~typ:(Sparrow_cil.typeOfLval tmp)
             ~payload:("extent:" ^ CilHelper.s_exp exp) ~lvalue:tmp
             (NodeSet.singleton term);
-          let cast_node = Origin.derive Origin.Field_cast in
+          let cast_node = Node.make () in
           let cast_cmd = Cmd.Cset (field, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval tmp), fieldinfo.floc) in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
           let (term, g) =
             make_nested_array ~path:field_path fd field typ exp fieldinfo.floc
               cast_node false g
           in
-          Origin.field fd field first;
-          generate_allocs_field ~path t lv fd term g
+            generate_allocs_field ~path t lv fd term g
       | TComp (comp, _) ->
+          let field = addOffsetLval (Sparrow_cil.Field (fieldinfo, Sparrow_cil.NoOffset)) lv in
           let (term, g) = make_struct fd field comp fieldinfo.floc entry g in
           let (term, g) =
             generate_allocs_field
               ~path:(path ^ "/field:" ^ fieldinfo.Sparrow_cil.fname)
               comp.cfields field fd term g
           in
-          Origin.field fd field first;
           generate_allocs_field ~path t lv fd term g
       | _ -> generate_allocs_field ~path t lv fd entry g
       end
@@ -967,17 +798,13 @@ let rec generate_allocs : Sparrow_cil.fundec -> Sparrow_cil.varinfo list -> node
   match vl with
     [] -> (entry, g)
   | varinfo::t ->
-      let rec ordinal i = function
-        | v :: _ when v == varinfo -> i
-        | _ :: rest -> ordinal (i + 1) rest
-        | [] -> invalid_arg "IntraCfg.generate_allocs" in
-      Origin.within fd.svar.vname (Origin.Local (ordinal 0 fd.slocals)) (fun () ->
+      begin
       match Sparrow_cil.unrollTypeDeep varinfo.vtype with
      | TArray (typ, Some exp, _) ->
           let lv = (Sparrow_cil.Var varinfo, Sparrow_cil.NoOffset) in
-          let tmp = (Sparrow_cil.Var (Origin.temporary ~string:false fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
+          let tmp = (Sparrow_cil.Var (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
           let (term, g) = make_array fd tmp typ exp varinfo.vdecl entry g in
-          let cast_node = Origin.derive Origin.Local_cast in
+          let cast_node = Node.make () in
           let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (unrollTypeDeep typ, []), Sparrow_cil.Lval tmp), varinfo.vdecl) in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
           let (term, g) =
@@ -993,7 +820,8 @@ let rec generate_allocs : Sparrow_cil.fundec -> Sparrow_cil.varinfo list -> node
               comp.cfields lv fd term g
           in
           generate_allocs fd t term g
-      | _ -> generate_allocs fd t entry g)
+      | _ -> generate_allocs fd t entry g
+      end
 
 let replace_node_graph : node -> node -> node -> t -> t
 = fun old entry exit g ->
@@ -1081,7 +909,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t
   let rec replace_str child_path e =
     match e with
       Const (CStr (s, _)) ->
-        let tempinfo = Origin.temporary ~string:true fd (Sparrow_cil.TPtr (Sparrow_cil.TInt (IChar, []), [])) in
+        let tempinfo = Sparrow_cil.makeTempVar fd (Sparrow_cil.TPtr (Sparrow_cil.TInt (IChar, []), [])) in
         let temp = (Sparrow_cil.Var tempinfo, Sparrow_cil.NoOffset) in
           (Lval temp,
            [ (temp, s, String_literal, child_path, tempinfo.vtype) ])
@@ -1089,7 +917,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t
         let (exp', l) = replace_str (child_path ^ "/lvalue-memory") exp in
         (match l with [] -> (e, l) | _ -> (Lval (Mem exp', off), l))
     | SizeOfStr s ->
-        let tempinfo = Origin.temporary ~string:true fd (Sparrow_cil.TPtr (Sparrow_cil.TInt (IChar, []), [])) in
+        let tempinfo = Sparrow_cil.makeTempVar fd (Sparrow_cil.TPtr (Sparrow_cil.TInt (IChar, []), [])) in
         let temp = (Sparrow_cil.Var tempinfo, Sparrow_cil.NoOffset) in
           (Lval temp,
            [ (temp, s, Sizeof_string, child_path, tempinfo.vtype) ])
@@ -1113,7 +941,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t
   in
   let generate_sallocs owners path l loc node g =
     List.fold_left (fun (node, g) (lv, s, role, child_path, typ) ->
-                    let new_node = Origin.derive Origin.String_alloc in
+                    let new_node = Node.make () in
                     let g = add_edge node new_node g in
                     let cmd = Cmd.Csalloc (lv, s, loc) in
                     let g = add_cmd new_node cmd g in
@@ -1128,13 +956,13 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t
     (* make it consistent with manual encoding in *Sem.ml *)
     let targets = ["strcpy"; "strcat"; "strncpy"; "memcpy"; "memmove"; "strlen"; "fgets";
                    "sprintf"; "scanf"; "getenv"; "strdup"; "gettext"; "getpwent"; "strchr"; "strrchr" ] in
-    fold_node (fun n g -> Origin.from fd.svar.vname n @@ fun () ->
+    fold_node (fun n g ->
       match find_cmd n g with
         Cmd.Cset (lv, e, loc) ->
           (match replace_str "expression-root" e with
             (_, []) -> g
           | (e, l) ->
-            let (empty_node, last_node) = (Origin.derive (Origin.String_command 1), Origin.derive (Origin.String_command 2)) in
+            let (empty_node, last_node) = (Node.make (), Node.make ()) in
             let g = add_cmd empty_node Cmd.Cskip g in
             let (node, g) =
               generate_sallocs (construction_temp_owners_for_node n)
@@ -1148,7 +976,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t
           (match replace_str "assume-root" e with
             (_, []) -> g
           | (e, l) ->
-            let (empty_node, last_node) = (Origin.derive (Origin.String_command 3), Origin.derive (Origin.String_command 4)) in
+            let (empty_node, last_node) = (Node.make (), Node.make ()) in
             let g = add_cmd empty_node Cmd.Cskip g in
             let (node, g) =
               generate_sallocs (construction_temp_owners_for_node n)
@@ -1175,7 +1003,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t
           (match (el, l) with
             (_, []) -> g
           | (el, l) ->
-            let (empty_node, last_node) = (Origin.derive (Origin.String_command 5), Origin.derive (Origin.String_command 6)) in
+            let (empty_node, last_node) = (Node.make (), Node.make ()) in
             let g = add_cmd empty_node Cmd.Cskip g in
             let (node, g) =
               generate_sallocs (construction_temp_owners_for_node n)
@@ -1189,7 +1017,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t
            (match replace_str "return-root" e with
             (_, []) -> g
           | (e, l) ->
-            let (empty_node, last_node) = (Origin.derive (Origin.String_command 7), Origin.derive (Origin.String_command 8)) in
+            let (empty_node, last_node) = (Node.make (), Node.make ()) in
             let g = add_cmd empty_node Cmd.Cskip g in
             let (node, g) =
               generate_sallocs (construction_temp_owners_for_node n)
@@ -1225,7 +1053,7 @@ let transform_allocs : Sparrow_cil.fundec -> t -> t
         let typ = Sparrow_cil.unrollTypeDeep typ in
         match lv, typ with
           (Var v, NoOffset), TComp (comp, _) ->   (* dynamic struct alloc *)
-            let cast_node = Origin.derive (Origin.Dynamic_alloc 0) in
+            let cast_node = Node.make () in
             let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval lv), loc) in
             g
             |> add_cmd node (Cmd.Calloc (lv, Cmd.Array exp, false, loc))
@@ -1243,12 +1071,12 @@ let transform_allocs : Sparrow_cil.fundec -> t -> t
       let g = add_cmd node cmd g in
       (node, g)
   in
-  fold_node (fun n g -> Origin.from fd.svar.vname n @@ fun () ->
+  fold_node (fun n g ->
       match find_cmd n g with
         Cmd.Ccall (Some lv, Lval (Var varinfo, _), args, loc) ->
           let name = SourceName.of_varinfo varinfo in
           if name = "malloc" || name = "__builtin_alloca" then
-            let new_node = Origin.derive (Origin.Dynamic_alloc 1) in
+            let new_node = Node.make () in
             let preds = pred n g in
             let succs = succ n g in
             let g = List.fold_left (fun g s -> remove_edge n s g) g succs in
@@ -1280,7 +1108,7 @@ let insert_return_nodes : t -> t
     match find_cmd c g with
       Cmd.Ccall (_, Lval (Var varinfo, _), _, _) when is_noreturn_callee varinfo ->
         let r = returnof c g in
-        let n = Origin.from (get_pid g) c (fun () -> Origin.derive Origin.Noreturn_return) in
+        let n = Node.make () in
         remove_edge c r g
         |> add_cmd n Cmd.Cskip
         |> add_edge c n
@@ -1330,14 +1158,14 @@ let rec process_gvardecl : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil
 = fun fd lv loc entry g ->
   match Sparrow_cil.unrollTypeDeep (Sparrow_cil.typeOfLval lv) with
   | TArray (typ, Some exp, _) ->
-      let tmp = (Sparrow_cil.Var (Origin.temporary ~string:false fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
+      let tmp = (Sparrow_cil.Var (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
       let (term, g) = make_array fd tmp typ exp loc entry g in
       record_construction_temp
         ~path:"type/root-array/storage" ~child_path:"type-driven"
         ~role:Aggregate_storage ~typ:(Sparrow_cil.typeOfLval tmp)
         ~payload:("extent:" ^ CilHelper.s_exp exp) ~lvalue:tmp
         (NodeSet.singleton term);
-      let cast_node = Origin.derive (Origin.Global_storage 0) in
+      let cast_node = Node.make () in
       let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval tmp), loc) in
       let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
       let (term, g) =
@@ -1346,7 +1174,7 @@ let rec process_gvardecl : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil
       in
       (term, g)
   | TInt (_, _) | TFloat (_, _) ->
-      let node = Origin.derive (Origin.Global_storage 1) in
+      let node = Node.make () in
       let cmd = Cmd.Cset (lv, Sparrow_cil.zero, loc) in
       (node, g |> add_cmd node cmd |> add_edge entry node)
   | TComp (comp, _) ->
@@ -1362,7 +1190,7 @@ let rec process_init : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.ini
 = fun fd lv i loc entry g ->
   match i with
     SingleInit exp ->
-      let new_node = Origin.derive Origin.Global_initializer in
+      let new_node = Node.make () in
       let cmd = Cmd.Cset (lv, exp, loc) in
       let g = add_edge entry new_node (add_cmd new_node cmd g) in
       (new_node, g)
@@ -1391,7 +1219,7 @@ let get_main_dec : Sparrow_cil.global list -> (Sparrow_cil.fundec * Sparrow_cil.
 
 let process_fundecl : Sparrow_cil.fundec -> Sparrow_cil.fundec -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd fundecl loc node g ->
-  let new_node = Origin.derive Origin.Function_value in
+  let new_node = Node.make () in
   let cmd = Cmd.Cfalloc ((Var fundecl.svar, NoOffset), fundecl, loc) in
   let g = add_edge node new_node (add_cmd new_node cmd g) in
   (new_node, g)
@@ -1399,32 +1227,20 @@ let process_fundecl : Sparrow_cil.fundec -> Sparrow_cil.fundec -> Sparrow_cil.lo
 let generate_cmd_args : Sparrow_cil.fundec -> Sparrow_cil.location -> t -> node * t
 = fun fd loc g ->
   let (argc, argv) = ((Sparrow_cil.Var (List.nth fd.sformals 0), Sparrow_cil.NoOffset), (Sparrow_cil.Var (List.nth fd.sformals 1), Sparrow_cil.NoOffset)) in
-  let arg_node = Origin.derive (Origin.Argument 0) in
+  let arg_node = Node.make () in
   let arg_cmd = Cmd.Ccall (None, Sparrow_cil.Lval (Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "sparrow_arg" Sparrow_cil.voidType), Sparrow_cil.NoOffset), [Sparrow_cil.Lval argc; Sparrow_cil.Lval argv], loc) in
 
   let (optind, optarg) =
     ((Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "optind" Sparrow_cil.intType), Sparrow_cil.NoOffset),
      (Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "optarg" Sparrow_cil.charPtrType), Sparrow_cil.NoOffset))
   in
-  let opt_node = Origin.derive (Origin.Argument 1) in
+  let opt_node = Node.make () in
   let opt_cmd = Cmd.Ccall (None, Sparrow_cil.Lval (Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "sparrow_opt" Sparrow_cil.voidType), Sparrow_cil.NoOffset), [Sparrow_cil.Lval optind; Sparrow_cil.Lval optarg], loc) in
   let g = g |> add_cmd arg_node arg_cmd |> add_cmd opt_node opt_cmd |> add_edge Node.ENTRY arg_node |> add_edge arg_node opt_node in
   (opt_node, g)
 
 let init : Sparrow_cil.fundec -> Sparrow_cil.location -> t
 =fun fd loc ->
-  let pid = fd.svar.vname in
-  Origin.seed pid Node.ENTRY Origin.Entry;
-  Origin.seed pid Node.EXIT Origin.Exit;
-  let rec block path b = List.iteri (fun i s ->
-    let path = path @ [ Origin.At i ] in
-    Origin.seed pid (Node.of_id s.sid) (Origin.Statement (Node.of_id s.sid, path));
-    match s.skind with
-    | If (_, a, b, _, _) -> block (path @ [ Origin.Then ]) a; block (path @ [ Origin.Else ]) b
-    | Switch (_, b, _, _, _) | Loop (b, _, _, _, _) | Block b -> block (path @ [ Origin.Body ]) b
-    | _ -> ()) b.bstmts in
-  if Option.is_some !Origin.active then block [] fd.sbody;
-  Origin.within pid Origin.Function @@ fun () ->
   let entry = Node.fromCilStmt (List.nth fd.sallstmts 0) in
   let g =
     (* add nodes *)
@@ -1501,60 +1317,43 @@ let init : Sparrow_cil.fundec -> Sparrow_cil.location -> t
    constructs nothing, as a declaration of a defined variable.  Further
    definitions repeat an initialized definition (invalid C) and construct
    nothing either. *)
-(* The constructions of the global chain in order: the index of the global
-   and the part it constructs.  [whole_program] is [generate_global_chain]'s
-   [defined_extern_storage = false]. *)
-let global_constructions ~whole_program globals =
-  let defined = Hashtbl.create 257 and occurrences = Hashtbl.create 257 in
+let generate_global_chain ?(defined_extern_storage = true) globals fd =
+  let defined =
+    if defined_extern_storage then fun _ -> false
+    else begin
+      let names = Hashtbl.create 257 in
+      List.iter
+        (function
+          | Sparrow_cil.GVar (variable, _, _) -> Hashtbl.replace names variable.Sparrow_cil.vname ()
+          | _ -> ())
+        globals;
+      fun (variable : Sparrow_cil.varinfo) -> Hashtbl.mem names variable.vname
+    end
+  in
   (* the definition (global index) that constructs a variable defined more
      than once in the whole program: the second, its initialized definition *)
-  let constructing = Hashtbl.create 17 in
-  if whole_program then
-    List.iteri
-      (fun index -> function
-         | Sparrow_cil.GVar (variable, _, _) ->
-           let name = variable.Sparrow_cil.vname in
-           let count = Option.value (Hashtbl.find_opt occurrences name) ~default:0 in
-           Hashtbl.replace defined name ();
-           Hashtbl.replace occurrences name (count + 1);
-           if count = 1 then Hashtbl.replace constructing name index
-         | _ -> ())
-      globals;
+  let constructing =
+    let table = Hashtbl.create 17 in
+    if not defined_extern_storage then begin
+      let occurrences = Hashtbl.create 257 in
+      List.iteri
+        (fun index global ->
+           match global with
+           | Sparrow_cil.GVar (variable, _, _) ->
+             let name = variable.Sparrow_cil.vname in
+             let count = Option.value (Hashtbl.find_opt occurrences name) ~default:0 in
+             Hashtbl.replace occurrences name (count + 1);
+             if count = 1 then Hashtbl.replace table name index
+           | _ -> ())
+        globals
+    end;
+    table
+  in
   let constructs (variable : Sparrow_cil.varinfo) gidx =
     match Hashtbl.find_opt constructing variable.vname with
     | None -> true
     | Some index -> index = gidx
   in
-  (* the storage a definition constructs: none for a single initializer *)
-  let storage (initinfo : Sparrow_cil.initinfo) =
-    match initinfo.init with None | Some (CompoundInit _) -> true | Some (SingleInit _) -> false
-  in
-  let globals = List.mapi (fun index global -> (index, global)) globals in
-  let storage_first =
-    if not whole_program then []
-    else
-      List.filter_map
-        (function
-          | index, Sparrow_cil.GVar (variable, initinfo, _)
-            when constructs variable index && storage initinfo -> Some (index, Origin.Storage)
-          | _ -> None)
-        globals
-  in
-  storage_first
-  @ List.concat_map
-      (function
-        | index, Sparrow_cil.GVar (variable, initinfo, _) when constructs variable index ->
-          (if not whole_program && storage initinfo then [ (index, Origin.Storage) ] else [])
-          @ (if Option.is_some initinfo.init then [ (index, Origin.Initializer) ] else [])
-        | index, Sparrow_cil.GVarDecl (variable, _) when not (Hashtbl.mem defined variable.vname) ->
-          [ (index, Origin.Storage) ]
-        | index, Sparrow_cil.GFun _ -> [ (index, Origin.Initializer) ]
-        | _ -> [])
-      globals
-
-let generate_global_chain ?(defined_extern_storage = true) globals fd =
-  Origin.seed fd.svar.vname Node.ENTRY Origin.Entry;
-  Origin.seed fd.svar.vname Node.EXIT Origin.Exit;
   pending_global_provenance_rows := [];
   completed_global_provenance_rows := [];
   pending_construction_temps := [];
@@ -1609,8 +1408,7 @@ let generate_global_chain ?(defined_extern_storage = true) globals fd =
   (* the next item index of a global: its nodes are numbered across both
      parts of its construction *)
   let next_item = Hashtbl.create 257 in
-  let emit (gidx, metadata) part build (node, g) =
-    let storage = part = Origin.Storage in
+  let emit (gidx, metadata) ~storage build (node, g) =
     let before = g.graph in
     let owner =
       match metadata with
@@ -1640,7 +1438,7 @@ let generate_global_chain ?(defined_extern_storage = true) globals fd =
               if outer_open then List.rev_append !journalled outer_journal
               else outer_journal;
             vertex_journal_open := outer_open)
-        (fun () -> Origin.within fd.svar.vname (Origin.Global (gidx, part)) (fun () -> build node g))
+        (fun () -> build node g)
     in
     (* the vertices [build] added: those of [g] not in [before] *)
     let generated =
@@ -1678,22 +1476,63 @@ let generate_global_chain ?(defined_extern_storage = true) globals fd =
      | Some _ | None -> ());
     (term, g)
   in
-  let items = Array.of_list items in
+  (* the storage a definition constructs: none for a single initializer *)
+  let definition_storage variable initinfo location =
+    match initinfo.init with
+    | None | Some (CompoundInit _) ->
+      Some (fun node g -> process_gvardecl fd (Sparrow_cil.var variable) location node g)
+    | Some (SingleInit _) -> None
+  in
+  let definition_initializer variable initinfo location =
+    match initinfo.init with
+    | None -> None
+    | Some init ->
+      Some (fun node g -> process_init fd (Sparrow_cil.var variable) init location node g)
+  in
+  let storage_first = not defined_extern_storage in
+  let start = (Node.ENTRY, empty fd) in
+  let start =
+    if not storage_first then start
+    else
+      List.fold_left
+        (fun acc (global, gidx, metadata) ->
+           match global with
+           | Sparrow_cil.GVar (variable, _, _) when not (constructs variable gidx) -> acc
+           | Sparrow_cil.GVar (variable, initinfo, location) -> (
+               match definition_storage variable initinfo location with
+               | Some build -> emit (gidx, metadata) ~storage:true build acc
+               | None -> acc)
+           | _ -> acc)
+        start items
+  in
   List.fold_left
-    (fun acc (gidx, part) ->
-       let global, _, metadata = items.(gidx) in
-       let emit = emit (gidx, metadata) part in
-       match global, part with
-       | Sparrow_cil.GVar (variable, _, location), Origin.Storage
-       | Sparrow_cil.GVarDecl (variable, location), _ ->
-         emit (fun node g -> process_gvardecl fd (Sparrow_cil.var variable) location node g) acc
-       | Sparrow_cil.GVar (variable, { init = Some init }, location), Origin.Initializer ->
-         emit (fun node g -> process_init fd (Sparrow_cil.var variable) init location node g) acc
-       | Sparrow_cil.GFun (function_, location), _ ->
-         emit (fun node g -> process_fundecl fd function_ location node g) acc
-       | _ -> acc)
-    (Node.ENTRY, empty fd)
-    (global_constructions ~whole_program:(not defined_extern_storage) globals)
+    (fun acc (global, gidx, metadata) ->
+       let emit = emit (gidx, metadata) in
+       match global with
+       | Sparrow_cil.GVar (variable, _, _) when not (constructs variable gidx) -> acc
+       | Sparrow_cil.GVar (variable, initinfo, location) ->
+         let acc =
+           if storage_first then acc
+           else
+             match definition_storage variable initinfo location with
+             | Some build -> emit ~storage:true build acc
+             | None -> acc
+         in
+         (match definition_initializer variable initinfo location with
+          | Some build -> emit ~storage:false build acc
+          | None -> acc)
+       | Sparrow_cil.GVarDecl (variable, _) when defined variable -> acc
+       | Sparrow_cil.GVarDecl (variable, location) ->
+         emit ~storage:true
+           (fun node g -> process_gvardecl fd (Sparrow_cil.var variable) location node g)
+           acc
+       | Sparrow_cil.GFun (function_, location) ->
+         emit ~storage:false (fun node g -> process_fundecl fd function_ location node g) acc
+       | Sparrow_cil.GType _ | Sparrow_cil.GCompTag _
+       | Sparrow_cil.GCompTagDecl _ | Sparrow_cil.GEnumTag _
+       | Sparrow_cil.GEnumTagDecl _ | Sparrow_cil.GAsm _
+       | Sparrow_cil.GPragma _ | Sparrow_cil.GText _ -> acc)
+    start items
 
 let generate_global_proc : Sparrow_cil.global list -> Sparrow_cil.fundec -> t
 = fun globals fd ->
@@ -1712,7 +1551,7 @@ let generate_global_proc : Sparrow_cil.global list -> Sparrow_cil.fundec -> t
     | Some (d, l) -> (d, l)
     | _ -> prerr_endline ("Error: main not Found"); exit 1
   in
-  let call_node = Origin.within fd.svar.vname Origin.Main (fun () -> Origin.derive Origin.Main_call) in
+  let call_node = Node.make () in
   let call_cmd = Cmd.Ccall (None, Lval (Var main_dec.svar, NoOffset), [], main_loc) in
   let result =
     g
@@ -1836,14 +1675,14 @@ let is_candidate n g =
 (* arr[0] = c0; arr[1] = c1; ..., arr[n] = cn; => sparrow_array_init(arr,c0, c1, ..., cn);
    salloc(arr[0], x0); x0 = s0; ..., => sparrow_array_init(arr, s0, s1, ..., sn) *)
 let rec make_replacement_node g replaced =
-  let node = Origin.derive Origin.Replacement in
+  let node = Node.make () in
   if G.mem_vertex g.graph node && not (List.mem node replaced) then
     make_replacement_node g replaced
   else node
 
 let optimize_array_init_with make_node : t -> t
 = fun g ->
-  fold_node (fun n g -> Origin.from (get_pid g) n @@ fun () ->
+  fold_node (fun n g ->
       match is_candidate n g with
         Some lval ->
           let (nodes, exps) = collect g n lval [] [] in
@@ -1879,7 +1718,7 @@ let optimize g =
   let optimize_array_init =
     if !collision_safe_global_replacement && get_pid g = "_G_" then
       optimize_array_init_with make_replacement_node
-    else optimize_array_init_with (fun _ _ -> Origin.derive Origin.Array_init)
+    else optimize_array_init_with (fun _ _ -> Node.make ())
   in
   optimize_with optimize_array_init g
 

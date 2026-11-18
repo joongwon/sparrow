@@ -22,9 +22,6 @@ sig
   (* reset this instance's value hash-cons table; see mapDom.mli *)
   val clear_b_table : unit -> unit
 
-  val replace_binding : A.t -> B.t -> t -> t
-  val widen_with : (A.t -> B.t option) -> t -> t -> t
-
   val empty : t
   val is_empty : t -> bool
   val find : A.t -> t -> B.t
@@ -283,18 +280,6 @@ struct
           if B.eq widened_v B.bot then None else Some widened_v in
       BatMap.merge widen' x y
 
-  (* BatMap.merge chooses resident keys from the original tree heights. *)
-  let widen_with known x y =
-    if x == y then x else
-    BatMap.merge (fun k a b -> match known k with
-      | Some v -> if B.eq v B.bot then None else Some (b_hashcons v)
-      | None -> match a, b with
-        | None, None -> None
-        | None, Some v | Some v, None -> if B.eq v B.bot then None else Some v
-        | Some a, Some b ->
-            let v = b_hashcons (B.widen a b) in
-            if B.eq v B.bot then None else Some v) x y
-
   let narrow : t -> t -> t = fun x y ->
     if x == y then x else
       let narrow' k opt_v1 opt_v2 =
@@ -326,11 +311,6 @@ struct
 
   let add : A.t -> B.t -> t -> t = fun k v x ->
     if B.eq v B.bot then BatMap.remove k x else BatMap.add k (b_hashcons v) x
-
-  (* A folded weak store has a nonbottom result and always replaces the key. *)
-  let replace_binding k v x =
-    let v = b_hashcons v in
-    BatMap.modify_def v k (fun _ -> v) x
 
   let weak_add : A.t -> B.t -> t -> t = fun k v x ->
     if B.eq v B.bot then x else
@@ -511,10 +491,6 @@ struct
     | V x, V y -> V (MapCPO.widen x y)
     | _, Top | Top, _ -> top
 
-  let widen_with known x y = match x, y with
-    | V x, V y -> V (MapCPO.widen_with known x y)
-    | _, Top | Top, _ -> top
-
   let narrow x y =
     match x, y with
     | V x, V y -> V (MapCPO.narrow x y)
@@ -543,10 +519,6 @@ struct
   let add k v = function
     | V x -> V (MapCPO.add k v x)
     | Top -> top
-
-  let replace_binding k v = function
-    | V m -> V (MapCPO.replace_binding k v m)
-    | Top -> Top
 
   let weak_add k v = function
     | V m -> V (MapCPO.weak_add k v m)

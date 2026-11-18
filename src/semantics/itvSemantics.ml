@@ -168,19 +168,6 @@ type _ primitive =
   | Describe_expressions : ((unit -> string) -> string) primitive
   | Text_concat : (string -> string -> string) primitive
 
-(* Compositions of primitives named by Make below. [helper_meaning] is Make's
-   own body at the identity stage, so a residual call and its unfolding agree. *)
-type _ helper =
-  | Variable_value : ((Proc.t -> PowLoc.t) -> Proc.t -> Val.t) helper
-  | Offset_locations : (Val.t -> PowLoc.t) helper
-  | Address : (Val.t -> PowLoc.t) helper
-  | Read_variable : ((Proc.t -> PowLoc.t) -> Proc.t -> Mem.t -> Val.t) helper
-  | Field_locations : (Val.t -> fieldinfo -> Mem.t -> PowLoc.t) helper
-  | Unary : unop -> (Spec.t -> Val.t -> Val.t) helper
-  | Binary : binop -> (Spec.t -> Val.t -> Val.t -> Val.t) helper
-  | Update : AbsSem.update_mode -> (Spec.t -> CallGraph.t -> PowLoc.t -> Val.t -> Mem.t -> Mem.t) helper
-  | Weak_store : (Spec.t -> CallGraph.t -> PowLoc.t -> Val.t -> Mem.t -> Mem.t) helper
-
 (* Environment adapters and finite domain fragments from ItvSem.
    Keep catches here: moving [typeOf] outside [Cast]'s try changes behaviour. *)
 let val_is_bot v = Val.eq v Val.bot
@@ -227,14 +214,10 @@ let size_of_exp = size_of
 let align_of_with_layout resolve_comp query =
   Val.of_itv (Itv.of_int (alignOf_int_with_layout resolve_comp (query ())))
 let align_of = align_of_with_layout Fun.id
-(* Set by M's module pre-analysis around a command that reads a location other modules decide: there a
-   cast to a pointer type may give null (WIDENING_SPARSE_PROOF (L0)). Global and L never set it. *)
-let null_cast = ref false
 let cast_with_layout resolve_comp query target v =
-  let cast = try Val.cast_with_layout resolve_comp (query ()) (target ()) v with
-    | Layout_resolution_failure _ as failure -> raise failure
-    | _ -> v in
-  if !null_cast && isPointerType (target ()) then Val.join cast Val.null else cast
+  try Val.cast_with_layout resolve_comp (query ()) (target ()) v with
+  | Layout_resolution_failure _ as failure -> raise failure
+  | _ -> v
 let cast = cast_with_layout Fun.id
 let pruned_value v i p =
   Val.make (i, p, Val.array_of_val v, Val.struct_of_val v, Val.pow_proc_of_val v)
@@ -397,10 +380,6 @@ module type STAGE = sig
     formal_groups repr -> Mem.t repr -> Mem.t repr
   val fold_bindings : (Loc.t repr -> Val.t repr -> Mem.t repr -> Mem.t repr) ->
     Loc.t list repr -> Val.t list repr -> Mem.t repr -> Mem.t repr
-  (** [residual h apply unfold]: [apply] applies [h] to let-bound arguments
-      and [unfold ()] is [h]'s body on the same arguments. The direct
-      interpreter unfolds; a specializer may keep the call. *)
-  val residual : 'a helper -> ('a repr -> 'r repr) -> (unit -> 'r repr) -> 'r repr
 end
 
 module Make (S : STAGE) = struct
@@ -415,30 +394,6 @@ module Make (S : STAGE) = struct
   let itv v = p1 Val_itv v
   let of_itv v = p1 Val_of_itv v
   let lookup locs mem = p2 Lookup locs mem
-  (* A helper's arguments are bound before its body, as direct evaluation does. *)
-  let helper1 h body a =
-    let* a = a in residual h (fun f -> app f a) (fun () -> body a)
-  let helper2 h body a b =
-    let* a = a in let* b = b in residual h (fun f -> app (app f a) b) (fun () -> body a b)
-  let helper3 h body a b c =
-    let* a = a in let* b = b in let* c = c in
-    residual h (fun f -> app (app (app f a) b) c) (fun () -> body a b c)
-  let helper5 h body a b c d e =
-    let* a = a in let* b = b in let* c = c in let* d = d in let* e = e in
-    residual h (fun f -> app (app (app (app (app f a) b) c) d) e) (fun () -> body a b c d e)
-
-  let offset_locations v =
-    helper1 Offset_locations (fun v -> p2 Locs_join (p1 Val_locs v) (p1 Array_locs (p1 Val_array v))) v
-  let variable_value var pid =
-    helper2 Variable_value (fun var pid -> p1 Val_of_locs (p2 Variable_locs var pid)) var pid
-  let address v = helper1 Address (fun v -> p1 Locs_remove_null (offset_locations v)) v
-  let read_variable var pid mem =
-    helper3 Read_variable (fun var pid mem -> lookup (address (variable_value var pid)) mem) var pid mem
-  let field_locations v field mem = helper3 Field_locations (fun v field mem ->
-      let* loaded = lookup (p1 Val_locs v) mem in
-      p2 Locs_join (p2 Struct_field (p1 Val_struct v) field)
-        (p2 Locs_join (p2 Array_field (p1 Val_array v) field)
-          (p2 Struct_field (p1 Val_struct loaded) field))) v field mem
 
   let can_strong_update mode spec callgraph locs =
     if_ (p1 Unsound_update spec) (fun () -> bool true) (fun () ->
@@ -453,24 +408,21 @@ module Make (S : STAGE) = struct
                   (fun () -> p1 Loc_frame_local loc) (fun () -> bool true))
                 (fun () -> bool false))) (fun () -> bool false))
 
-  let store mode spec callgraph locs v mem =
+  let update mode spec callgraph locs v mem =
     if_ (can_strong_update mode spec callgraph locs)
       (fun () -> p3 Strong_update locs v mem)
       (fun () -> p3 Weak_update locs v mem)
-  (* [Update mode] takes the transfer's mode; [Weak_store] is a Weak update in every mode. *)
-  let update mode = helper5 (Update mode) (store mode)
-  let weak_store = helper5 Weak_store (store AbsSem.Weak)
 
-  let eval_uop spec op v = helper2 (Unary op) (fun spec v ->
+  let eval_uop spec op v =
     if_ (p1 Val_is_bot v) (fun () -> value Val.bot) (fun () ->
       let* i = itv v in
       of_itv (match op with
         | Neg -> p2 Itv_minus (interval Itv.zero) i
         | LNot -> p1 Itv_not i
         | BNot -> if_ (p1 Unsound_bitwise spec)
-            (fun () -> interval Itv.bot) (fun () -> p1 Itv_unknown_unary i)))) spec v
+            (fun () -> interval Itv.bot) (fun () -> p1 Itv_unknown_unary i)))
 
-  let eval_bop spec op a b = helper3 (Binary op) (fun spec a b ->
+  let eval_bop spec op a b =
     let ints op = of_itv (p2 op (itv a) (itv b)) in
     let pointer op = p2 Val_join (p1 Val_of_locs (p1 Val_locs a))
       (p1 Val_of_array (p2 op (p1 Val_array a) (itv b))) in
@@ -485,12 +437,16 @@ module Make (S : STAGE) = struct
     | LAnd -> ints Itv_and | LOr -> ints Itv_or
     | Shiftlt -> if_ (p1 Unsound_bitwise spec) (fun () -> a) (fun () -> ints Itv_shift)
     | Shiftrt | Mod | BAnd | BXor | BOr ->
-        if_ (p1 Unsound_bitwise spec) (fun () -> a) (fun () -> ints Itv_unknown_binary)) spec a b
+        if_ (p1 Unsound_bitwise spec) (fun () -> a) (fun () -> ints Itv_unknown_binary)
 
   let rec resolve_offset spec pid v os mem = match os with
-    | NoOffset -> offset_locations v
+    | NoOffset -> p2 Locs_join (p1 Val_locs v) (p1 Array_locs (p1 Val_array v))
     | Field (f, rest) ->
-        let* locs = field_locations v (literal (Field_info f)) mem in
+        let field = literal (Field_info f) in
+        let* loaded = lookup (p1 Val_locs v) mem in
+        let* locs = p2 Locs_join (p2 Struct_field (p1 Val_struct v) field)
+          (p2 Locs_join (p2 Array_field (p1 Val_array v) field)
+            (p2 Struct_field (p1 Val_struct loaded) field)) in
         resolve_offset spec pid (p1 Val_of_locs locs) rest mem
     | Index (e, rest) ->
         let* loaded = lookup (p1 Val_locs v) mem in
@@ -498,14 +454,11 @@ module Make (S : STAGE) = struct
         resolve_offset spec pid (p1 Val_of_locs (p1 Array_locs (p1 Val_array loaded))) rest mem
   and eval_lv spec pid (host, offset) mem =
     let* v = match host with
-      | Var vi -> variable_value (literal (Variable vi)) pid
+      | Var vi -> p1 Val_of_locs (p2 Variable_locs (literal (Variable vi)) pid)
       | Mem e -> eval spec pid e mem in
-    match offset with
-    | NoOffset -> address v
-    | _ -> p1 Locs_remove_null (resolve_offset spec pid v offset mem)
+    p1 Locs_remove_null (resolve_offset spec pid v offset mem)
   and eval spec pid e mem = match e with
     | Const c -> p1 Eval_const (literal (Constant c))
-    | Lval (Var vi, NoOffset) | StartOf (Var vi, NoOffset) -> read_variable (literal (Variable vi)) pid mem
     | Lval lv | StartOf lv -> lookup (eval_lv spec pid lv mem) mem
     | SizeOf t -> p1 Size_of (literal (Type t))
     | SizeOfE e -> p1 Size_of_exp (literal (Expression_type e))
@@ -622,7 +575,7 @@ module Make (S : STAGE) = struct
     | Some e ->
         let* v = value_boundary (eval spec pid e mem) in
         let* locs = p2 Return_locs pid (literal (Expression_type e)) in
-        weak_store spec callgraph locs v mem
+        update AbsSem.Weak spec callgraph locs v mem
 
   let assume mode spec callgraph pid e mem =
     let* _ = discard (eval spec pid e mem) in
@@ -639,16 +592,17 @@ module Make (S : STAGE) = struct
         let* mem = update mode spec callgraph (eval_lv spec pid lv mem) v mem in
         update mode spec callgraph ext v mem)
 
-  let bind_lvar store location v mem = store (p1 Locs_singleton location) v mem
+  let bind_lvar mode spec callgraph location v mem =
+    update mode spec callgraph (p1 Locs_singleton location) v mem
 
-  let bind_arg_ids store vs locations mem = fold_bindings (bind_lvar store) locations vs mem
+  let bind_arg_ids mode spec callgraph vs locations mem =
+    fold_bindings (bind_lvar mode spec callgraph) locations vs mem
 
   let bind_arg_lvars_set mode spec callgraph groups vs mem =
     let* groups = p2 Compatible_formals groups vs in
-    let bind store = fold_formals (fun locations mem ->
-      bind_arg_ids store vs locations mem) groups mem in
-    if_ (p1 Several_formals groups) (fun () -> bind (weak_store spec callgraph))
-      (fun () -> bind (update mode spec callgraph))
+    let bind mode = fold_formals (fun locations mem ->
+      bind_arg_ids mode spec callgraph vs locations mem) groups mem in
+    if_ (p1 Several_formals groups) (fun () -> bind AbsSem.Weak) (fun () -> bind mode)
 
   let eval_list spec pid expressions mem =
     let rec loop acc = function
@@ -684,11 +638,7 @@ module Make (S : STAGE) = struct
   let call_return spec callgraph pid lv f mem =
     let* targets = p1 Val_procs (eval spec pid f mem) in
     let* returns = p2 Call_return_locs targets (literal (Lvalue_type_query lv)) in
-    (* Keep ItvSem's evaluation order: the return value is read before the
-       destination (a helper binds its arguments left to right). *)
-    let* v = lookup returns mem in
-    let* locs = eval_lv spec pid lv mem in
-    weak_store spec callgraph locs v mem
+    update AbsSem.Weak spec callgraph (eval_lv spec pid lv mem) (lookup returns mem) mem
 end
 
 module Direct_stage = struct
@@ -706,21 +656,9 @@ module Direct_stage = struct
   let fold_procs = PowProc.fold
   let fold_formals = BatSet.fold
   let fold_bindings = Vocab.list_fold2
-  let residual _ _ unfold = unfold ()
 end
-module Unstaged = Make (Direct_stage)
-let helper_meaning : type a. a helper -> a = function
-  | Variable_value -> Unstaged.variable_value
-  | Offset_locations -> Unstaged.offset_locations
-  | Address -> Unstaged.address
-  | Read_variable -> Unstaged.read_variable
-  | Field_locations -> Unstaged.field_locations
-  | Unary op -> fun spec v -> Unstaged.eval_uop spec op v
-  | Binary op -> fun spec a b -> Unstaged.eval_bop spec op a b
-  | Update mode -> Unstaged.update mode
-  | Weak_store -> Unstaged.weak_store
 module Direct = struct
-  include Unstaged
+  include Make (Direct_stage)
   (* Keep the public direct API on CFG nodes. The common bodies use
      independent procedure, ordinary allocation and string allocation slots. *)
   let array_alloc spec node = array_alloc spec (node_metadata node)

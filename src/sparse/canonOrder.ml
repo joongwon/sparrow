@@ -98,8 +98,8 @@ let default_key node =
     procedure = InterCfg.Node.get_pid node;
     position = position_of_cfgnode (InterCfg.Node.get_cfgnode node) }
 
-(* The whole-program driver installs the canonical TU-local key here before
-   the sparse analysis (CanonNames.install_order_key). *)
+(* A driver may install its own node key here; without one the key is the
+   procedure and the position in its CFG (default_key). *)
 let node_key : (BasicDom.Node.t -> key) option ref = ref None
 
 let key_of node = match !node_key with Some f -> f node | None -> default_key node

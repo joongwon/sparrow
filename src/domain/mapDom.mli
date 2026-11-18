@@ -27,9 +27,6 @@ sig
      sharing.  No-op for single-solve clients (they never call it). *)
   val clear_b_table : unit -> unit
 
-  val replace_binding : A.t -> B.t -> t -> t
-  val widen_with : (A.t -> B.t option) -> t -> t -> t
-
   val empty : t
   val is_empty : t -> bool
   val find : A.t -> t -> B.t
