@@ -9,11 +9,34 @@
 (*                                                                     *)
 (***********************************************************************)
 (** Array domain *)
+
+(** The byte size of an element: one known non-negative size or unknown.
+    [Size n] is built only by [of_int], which rejects negative [n]; [Top]
+    stands for any non-negative size. *)
+module Stride : sig
+  type t = private Bot | Size of int | Top
+
+  val bot : t
+  val top : t
+  val of_int : int -> t
+  (** Raises [Invalid_argument] on a negative size. *)
+  val one : t
+  val join : t -> t -> t
+  val meet : t -> t -> t
+  val le : t -> t -> bool
+  val eq : t -> t -> bool
+  val widen : t -> t -> t
+  val narrow : t -> t -> t
+  val to_itv : t -> Itv.t
+  (** [Top] is [\[0, +oo\]]. *)
+  val to_string : t -> string
+end
+
 module ArrInfo : sig
   type t = {
     offset : Itv.t;
     size : Itv.t;
-    stride : Itv.t;
+    stride : Stride.t;
     null_pos : Itv.t;
     structure : StructBlk.PowStruct.t;
   }
@@ -24,7 +47,7 @@ end
 
 include MapDom.LAT with type A.t = BasicDom.Allocsite.t and type B.t = ArrInfo.t
 
-val make : BasicDom.Allocsite.t -> Itv.t -> Itv.t -> Itv.t -> Itv.t -> t
+val make : BasicDom.Allocsite.t -> Itv.t -> Itv.t -> Stride.t -> Itv.t -> t
 val offsetof : t -> Itv.t
 val sizeof : t -> Itv.t
 val nullof : t -> Itv.t

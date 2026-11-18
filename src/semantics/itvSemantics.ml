@@ -232,7 +232,7 @@ let array_alloc spec node e is_static mem =
   let array =
     ArrayBlk.make
       (Allocsite.allocsite_of_node node)
-      (Itv.of_int 0) size (Itv.of_int 1) Itv.nat
+      (Itv.of_int 0) size ArrayBlk.Stride.one Itv.nat
   in
   Val.join
     (Val.of_pow_loc
@@ -247,7 +247,7 @@ let string_alloc node s =
        (Allocsite.allocsite_of_string node)
        (Itv.of_int 0)
        (Itv.of_int (String.length s + 1))
-       (Itv.of_int 1)
+       ArrayBlk.Stride.one
        (Itv.of_int (String.length s)))
 
 let array_assign mode spec callgraph node lv e is_static mem =

@@ -12,15 +12,16 @@ let model_alloc_one mode spec cg pid lvo f mem =
   match lvo with
   | None -> mem
   | Some lv ->
-      let size =
+      let stride =
         match f.vtype with
         | TFun (TPtr (t, _), _, _, _) -> (
-            try Itv.of_int (CilHelper.byteSizeOf t) with _ -> Itv.top)
-        | _ -> Itv.top
+            try ArrayBlk.Stride.of_int (CilHelper.byteSizeOf t)
+            with _ -> ArrayBlk.Stride.top)
+        | _ -> ArrayBlk.Stride.top
       in
       let site = ext_site (SourceName.of_varinfo f) in
       let array =
-        Val.of_array (ArrayBlk.make site Itv.zero Itv.one size Itv.nat)
+        Val.of_array (ArrayBlk.make site Itv.zero Itv.one stride Itv.nat)
       in
       let locations = alloc_loc site in
       let mem = update mode spec cg (eval_lv spec pid lv mem) array mem in
@@ -61,7 +62,8 @@ let model_strdup mode spec cg node pid lvo expressions mem =
       let null = ArrayBlk.nullof source in
       let sources = ArrayBlk.pow_loc_of_array source in
       let array =
-        ArrayBlk.make site Itv.zero (Itv.minus size Itv.zero) Itv.one null
+        ArrayBlk.make site Itv.zero (Itv.minus size Itv.zero)
+          ArrayBlk.Stride.one null
       in
       let locations = alloc_loc site in
       let v = Val.join (Val.of_array array) (Val.of_pow_loc locations) in
@@ -397,7 +399,7 @@ let gen_block mode spec cg node initial mem =
   let site = Allocsite.allocsite_of_node node in
   let v =
     Val.of_array
-      (ArrayBlk.make site (Itv.of_int 0) Itv.top (Itv.of_int 1) Itv.nat)
+      (ArrayBlk.make site (Itv.of_int 0) Itv.top ArrayBlk.Stride.one Itv.nat)
   in
   let mem = update mode spec cg (alloc_loc site) initial mem in
   (mem, v)

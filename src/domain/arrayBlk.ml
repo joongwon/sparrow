@@ -16,11 +16,62 @@ open BasicDom
 open Vocab
 open StructBlk
 
+(* The byte size of an element: one known non-negative size or unknown.  It
+   is set by allocation and by every cast, so it never needs a range. *)
+module Stride = struct
+  type t = Bot | Size of int | Top [@@deriving compare]
+
+  let bot = Bot
+  let top = Top
+
+  let of_int n =
+    if n < 0 then invalid_arg "ArrayBlk.Stride.of_int: negative size"
+    else Size n
+
+  let one = Size 1
+
+  let join a b =
+    match (a, b) with
+    | Bot, x | x, Bot -> x
+    | Size m, Size n when m = n -> a
+    | _ -> Top
+
+  let meet a b =
+    match (a, b) with
+    | Top, x | x, Top -> x
+    | Size m, Size n when m = n -> a
+    | _ -> Bot
+
+  let le a b =
+    match (a, b) with
+    | Bot, _ | _, Top -> true
+    | Size m, Size n -> m = n
+    | _ -> false
+
+  let eq a b = compare a b = 0
+
+  (* Finite height: widening is join. *)
+  let widen = join
+  let narrow a b = match a with Top -> b | _ -> a
+
+  let to_itv = function
+    | Bot -> Itv.bot
+    | Size n -> Itv.of_int n
+    | Top -> Itv.nat
+
+  let to_string = function
+    | Bot -> "bot"
+    | Size n -> string_of_int n
+    | Top -> "top"
+
+  let pp fmt x = Format.fprintf fmt "%s" (to_string x)
+end
+
 module ArrInfo = struct
   type t = {
     offset : Itv.t;
     size : Itv.t;
-    stride : Itv.t;
+    stride : Stride.t;
     null_pos : Itv.t;
     structure : PowStruct.t;
   }
@@ -30,7 +81,7 @@ module ArrInfo = struct
     {
       offset = Itv.bot;
       size = Itv.bot;
-      stride = Itv.bot;
+      stride = Stride.bot;
       null_pos = Itv.bot;
       structure = PowStruct.bot;
     }
@@ -39,7 +90,7 @@ module ArrInfo = struct
     {
       offset = Itv.top;
       size = Itv.top;
-      stride = Itv.top;
+      stride = Stride.top;
       null_pos = Itv.top;
       structure = PowStruct.bot;
     }
@@ -48,7 +99,7 @@ module ArrInfo = struct
     {
       offset = Itv.zero;
       size = Itv.pos;
-      stride = Itv.one;
+      stride = Stride.one;
       null_pos = Itv.nat;
       structure = PowStruct.bot;
     }
@@ -62,7 +113,7 @@ module ArrInfo = struct
       {
         offset = Itv.join a1.offset a2.offset;
         size = Itv.join a1.size a2.size;
-        stride = Itv.join a1.stride a2.stride;
+        stride = Stride.join a1.stride a2.stride;
         null_pos = Itv.join a1.null_pos a2.null_pos;
         structure = PowStruct.join a1.structure a2.structure;
       }
@@ -73,7 +124,7 @@ module ArrInfo = struct
       {
         offset = Itv.meet a1.offset a2.offset;
         size = Itv.meet a1.size a2.size;
-        stride = Itv.meet a1.stride a2.stride;
+        stride = Stride.meet a1.stride a2.stride;
         null_pos = Itv.meet a1.null_pos a2.null_pos;
         structure = PowStruct.meet a1.structure a2.structure;
       }
@@ -84,7 +135,7 @@ module ArrInfo = struct
       {
         offset = Itv.widen a1.offset a2.offset;
         size = Itv.widen a1.size a2.size;
-        stride = Itv.widen a1.stride a2.stride;
+        stride = Stride.widen a1.stride a2.stride;
         null_pos = Itv.widen a1.null_pos a2.null_pos;
         structure = PowStruct.widen a1.structure a2.structure;
       }
@@ -95,7 +146,7 @@ module ArrInfo = struct
       {
         offset = Itv.narrow a1.offset a2.offset;
         size = Itv.narrow a1.size a2.size;
-        stride = Itv.narrow a1.stride a2.stride;
+        stride = Stride.narrow a1.stride a2.stride;
         null_pos = Itv.narrow a1.null_pos a2.null_pos;
         structure = PowStruct.narrow a1.structure a2.structure;
       }
@@ -104,7 +155,7 @@ module ArrInfo = struct
     if a1 == a2 then true
     else
       Itv.eq a1.offset a2.offset && Itv.eq a1.size a2.size
-      && Itv.eq a1.stride a2.stride
+      && Stride.eq a1.stride a2.stride
       && Itv.eq a1.null_pos a2.null_pos
       && PowStruct.eq a1.structure a2.structure
 
@@ -112,17 +163,18 @@ module ArrInfo = struct
     if a1 == a2 then true
     else
       Itv.le a1.offset a2.offset && Itv.le a1.size a2.size
-      && Itv.le a1.stride a2.stride
+      && Stride.le a1.stride a2.stride
       && Itv.le a1.null_pos a2.null_pos
       && PowStruct.le a1.structure a2.structure
 
-  let resize orig_st new_st x = Itv.divide (Itv.times x orig_st) new_st
+  let resize orig_st new_st x =
+    Itv.divide (Itv.times x (Stride.to_itv orig_st)) (Stride.to_itv new_st)
 
   let cast typ arr =
     match typ with
     | Sparrow_cil.TPtr ((Sparrow_cil.TComp (comp, _) as t'), _) ->
         let new_stride =
-          try CilHelper.byteSizeOf t' |> Itv.of_int with _ -> Itv.top
+          try Stride.of_int (CilHelper.byteSizeOf t') with _ -> Stride.top
         in
         {
           offset = resize arr.stride new_stride arr.offset;
@@ -133,7 +185,7 @@ module ArrInfo = struct
         }
     | Sparrow_cil.TPtr (t', _) | Sparrow_cil.TArray (t', _, _) ->
         let new_stride =
-          try CilHelper.byteSizeOf t' |> Itv.of_int with _ -> Itv.top
+          try Stride.of_int (CilHelper.byteSizeOf t') with _ -> Stride.top
         in
         {
           arr with
@@ -154,19 +206,20 @@ module ArrInfo = struct
 
   let to_string arr =
     "(" ^ Itv.to_string arr.offset ^ ", " ^ Itv.to_string arr.size ^ ", "
-    ^ Itv.to_string arr.stride ^ ", " ^ Itv.to_string arr.null_pos ^ ", "
+    ^ Stride.to_string arr.stride
+    ^ ", " ^ Itv.to_string arr.null_pos ^ ", "
     ^ PowStruct.to_string arr.structure
     ^ ")"
 
   let pp fmt arr =
     Format.fprintf fmt "@[<hov 2>( %a, %a, %a, %a, %a )@]" Itv.pp arr.offset
-      Itv.pp arr.size Itv.pp arr.stride Itv.pp arr.null_pos PowStruct.pp
+      Itv.pp arr.size Stride.pp arr.stride Itv.pp arr.null_pos PowStruct.pp
       arr.structure
 end
 
 include MapDom.MakeLAT (Allocsite) (ArrInfo)
 
-let make : Allocsite.t -> Itv.t -> Itv.t -> Itv.t -> Itv.t -> t =
+let make : Allocsite.t -> Itv.t -> Itv.t -> Stride.t -> Itv.t -> t =
  fun a o sz st np -> add a (ArrInfo.make (o, sz, st, np, PowStruct.bot)) bot
 
 let offsetof : t -> Itv.t =
