@@ -10,8 +10,7 @@
 (***********************************************************************)
 (** Map domain *)
 
-module type CPO =
-sig
+module type CPO = sig
   include AbsDom.CPO
   module A : AbsDom.SET
   module B : AbsDom.CPO
@@ -26,20 +25,21 @@ sig
      all existing values remain valid -- it only drops cross-solve physical
      sharing.  No-op for single-solve clients (they never call it). *)
   val clear_b_table : unit -> unit
-
   val empty : t
   val is_empty : t -> bool
   val find : A.t -> t -> B.t
-  (** Return the comparison-equivalent key actually resident in the map,
-      together with its value.  Unlike [find], this preserves key
-      representatives when a client builds a restricted map from keys
-      decoded independently of the source map. *)
+
   val find_binding : A.t -> t -> (A.t * B.t) option
-  (** Reinsert an already-resident binding without key or value
-      normalization.  This is the key-driven counterpart of [filter]: it is
-      intended only for rebuilding a restriction from [find_binding]
-      results. *)
+  (** Return the comparison-equivalent key actually resident in the map,
+      together with its value. Unlike [find], this preserves key representatives
+      when a client builds a restricted map from keys decoded independently of
+      the source map. *)
+
   val add_binding : A.t -> B.t -> t -> t
+  (** Reinsert an already-resident binding without key or value normalization.
+      This is the key-driven counterpart of [filter]: it is intended only for
+      rebuilding a restriction from [find_binding] results. *)
+
   val add : A.t -> B.t -> t -> t
   val weak_add : A.t -> B.t -> t -> t
   val remove : A.t -> t -> t
@@ -51,30 +51,31 @@ sig
   val mem : A.t -> t -> bool
   val filter : (A.t -> B.t -> bool) -> t -> t
   val cardinal : t -> int
-  val choose : t -> (A.t * B.t)
+  val choose : t -> A.t * B.t
   val to_string : t -> string
   val for_all : (A.t -> B.t -> bool) -> t -> bool
   val exists : (A.t -> B.t -> bool) -> t -> bool
   val keys : t -> PowA.t
 
-  val unstables : t -> t -> (B.t -> B.t -> bool) -> PowA.t
-    -> (A.t * B.t * B.t) list
+  val unstables :
+    t -> t -> (B.t -> B.t -> bool) -> PowA.t -> (A.t * B.t * B.t) list
 
   val join_pairs : (A.t * B.t) list -> t -> t
   val widen_pairs : (A.t * B.t) list -> t -> t
   val meet_big_small : t -> t -> t
 end
 
-module type LAT =
-sig
+module type LAT = sig
   include AbsDom.LAT
   include CPO with type t := t
 end
 
-module MakeCPO (A:AbsDom.SET)(B:AbsDom.CPO) : CPO
-  with type t = B.t BatMap.Make(A).t
-  and type PowA.t = PowDom.MakeCPO(A).t
-  and type A.t = A.t and type B.t = B.t
+module MakeCPO (A : AbsDom.SET) (B : AbsDom.CPO) :
+  CPO
+    with type t = B.t BatMap.Make(A).t
+     and type PowA.t = PowDom.MakeCPO(A).t
+     and type A.t = A.t
+     and type B.t = B.t
 
-module MakeLAT (A:AbsDom.SET)(B:AbsDom.CPO) : LAT
-  with type A.t = A.t and type B.t = B.t
+module MakeLAT (A : AbsDom.SET) (B : AbsDom.CPO) :
+  LAT with type A.t = A.t and type B.t = B.t
