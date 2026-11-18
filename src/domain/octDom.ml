@@ -75,7 +75,7 @@ module PackConf = struct
     ItvAnalysis.Table.fold
       (fun _ mem pack ->
         ItvDom.Mem.foldi
-          (fun x v pack ->
+          (fun x (v, _) pack ->
             if ItvDom.Val.pow_proc_of_val v <> PowProc.bot then pack
             else
               let plocs =

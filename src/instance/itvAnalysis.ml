@@ -75,8 +75,8 @@ let print_abslocs_info locs =
  * **************** *)
 let ignore_alarm a arr offset =
   !Options.bugfinder >= 1
-  && (Allocsite.is_string_allocsite a
-     || arr.ArrInfo.size = Itv.top || arr.ArrInfo.size = Itv.one
+  && (Loc.is_string_allocsite a || arr.ArrInfo.size = Itv.top
+    || arr.ArrInfo.size = Itv.one
      || (offset = Itv.top && arr.ArrInfo.size = Itv.nat)
      || offset = Itv.zero)
   || (!Options.bugfinder >= 2 && not (Itv.is_const arr.ArrInfo.size))
@@ -85,7 +85,7 @@ let ignore_alarm a arr offset =
         || Itv.meet arr.ArrInfo.size Itv.zero <> Itv.bot
         || (offset = Itv.top && arr.ArrInfo.offset <> Itv.top))
 
-let check_bo v1 v2opt : (status * Allocsite.t option * string) list =
+let check_bo v1 v2opt : (status * Loc.t option * string) list =
   let arr = Val.array_of_val v1 in
   if ArrayBlk.eq arr ArrayBlk.bot then [ (BotAlarm, None, "Array is Bot") ]
   else
@@ -109,7 +109,7 @@ let check_bo v1 v2opt : (status * Allocsite.t option * string) list =
         (status, Some a, string_of_alarminfo offset arr.ArrInfo.size) :: lst)
       arr []
 
-let check_nd v1 : (status * Allocsite.t option * string) list =
+let check_nd v1 : (status * Loc.t option * string) list =
   let ploc = Val.pow_loc_of_val v1 in
   if PowLoc.eq ploc PowLoc.bot then [ (BotAlarm, None, "PowLoc is Bot") ]
   else if PowLoc.mem Loc.null ploc then [ (UnProven, None, "Null Dereference") ]
@@ -119,7 +119,7 @@ let inspect_aexp_bo_with ~eval ~eval_lv ~eval_copy_length ~make_query aexp mem
     queries =
   (match aexp with
     | ArrayExp (lv, e, loc) ->
-        let v1 = Mem.lookup (eval_lv lv) mem in
+        let v1 = eval (Sparrow_cil.StartOf lv) in
         let v2 = eval e in
         let lst = check_bo v1 (Some v2) in
         List.map
@@ -144,7 +144,7 @@ let inspect_aexp_bo_with ~eval ~eval_lv ~eval_copy_length ~make_query aexp mem
     | Strcpy (e1, e2, loc) ->
         let v1 = eval e1 in
         let v2 = eval e2 in
-        let v2 = Val.of_itv (ArrayBlk.nullof (Val.array_of_val v2)) in
+        let v2 = Val.of_itv (ItvSemantics.null_of mem v2) in
         let lst = check_bo v1 (Some v2) in
         List.map
           (fun (status, a, desc) -> make_query ~loc ~allocsite:a ~status ~desc)
@@ -152,8 +152,8 @@ let inspect_aexp_bo_with ~eval ~eval_lv ~eval_copy_length ~make_query aexp mem
     | Strcat (e1, e2, loc) ->
         let v1 = eval e1 in
         let v2 = eval e2 in
-        let np1 = ArrayBlk.nullof (Val.array_of_val v1) in
-        let np2 = ArrayBlk.nullof (Val.array_of_val v2) in
+        let np1 = ItvSemantics.null_of mem v1 in
+        let np2 = ItvSemantics.null_of mem v2 in
         let np = Val.of_itv (Itv.plus np1 np2) in
         let lst = check_bo v1 (Some np) in
         List.map
@@ -350,15 +350,15 @@ let generate : Global.t * Table.t * target -> query list =
       let mem = Table.find node inputof in
       let cmd = InterCfg.cmdof global.icfg node in
       let aexps = AlarmExp.collect cmd in
+      (* Every node is checked: pruning is not bottom-strict, so an empty
+         input does not mean unreachable; bot values give BotAlarm. *)
       let qs =
         list_fold
           (fun aexp ->
-            if mem = Mem.bot then id (* dead code *)
-            else
-              match target with
-              | BO -> inspect_aexp_bo node aexp mem
-              | ND -> inspect_aexp_nd node aexp mem
-              | DZ -> inspect_aexp_dz node aexp mem)
+            match target with
+            | BO -> inspect_aexp_bo node aexp mem
+            | ND -> inspect_aexp_nd node aexp mem
+            | DZ -> inspect_aexp_dz node aexp mem)
           aexps qs
       in
       (qs, k + 1))
@@ -373,12 +373,10 @@ let generate_with_mem : Global.t * Mem.t * target -> query list =
     (fun node ->
       let cmd = InterCfg.cmdof global.icfg node in
       let aexps = AlarmExp.collect cmd in
-      if mem = Mem.bot then id (* dead code *)
-      else
-        match target with
-        | BO -> list_fold (fun aexp -> inspect_aexp_bo node aexp mem) aexps
-        | ND -> list_fold (fun aexp -> inspect_aexp_nd node aexp mem) aexps
-        | DZ -> list_fold (fun aexp -> inspect_aexp_dz node aexp mem) aexps)
+      match target with
+      | BO -> list_fold (fun aexp -> inspect_aexp_bo node aexp mem) aexps
+      | ND -> list_fold (fun aexp -> inspect_aexp_nd node aexp mem) aexps
+      | DZ -> list_fold (fun aexp -> inspect_aexp_dz node aexp mem) aexps)
     nodes []
 
 (* ********** *
@@ -409,7 +407,7 @@ let inspect_alarm : Global.t -> Spec.t -> Table.t -> Report.query list =
 
 let get_locset mem =
   ItvDom.Mem.foldi
-    (fun l v locset ->
+    (fun l (v, _) locset ->
       locset |> PowLoc.add l
       |> PowLoc.union (Val.pow_loc_of_val v)
       |> BatSet.fold

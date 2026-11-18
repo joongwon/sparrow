@@ -94,12 +94,11 @@ let compute ~(memory : ItvDom.Mem.t) ~(calls : (string list * PowLoc.t) list)
         else Queue.add t out
   in
   ItvDom.Mem.iter
-    (fun loc value ->
+    (fun loc (value, _) ->
       let holder = root loc in
       PowLoc.iter (note holder) (ItvDom.Val.pow_loc_of_val value);
       PowLoc.iter (note holder)
-        (ArrayBlk.pow_loc_of_array (ItvDom.Val.array_of_val value));
-      StructBlk.iter (fun l _ -> note holder l) (ItvDom.Val.struct_of_val value))
+        (ArrayBlk.pow_loc_of_array (ItvDom.Val.array_of_val value)))
     memory;
   while not (Queue.is_empty out) do
     let r = Queue.take out in

@@ -17,7 +17,7 @@ type query = {
   node : InterCfg.node;
   exp : AlarmExp.t;
   loc : Sparrow_cil.location;
-  allocsite : BasicDom.Allocsite.t option;
+  allocsite : BasicDom.Loc.t option;  (** the array's cell *)
   src : (InterCfg.node * Sparrow_cil.location) option;
   status : status;
   desc : string;

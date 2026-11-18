@@ -40,11 +40,6 @@ val eval :
   ItvDom.Val.t
 
 val eval_array_alloc :
-  ?spec:Spec.t ->
-  BasicDom.Node.t ->
-  Sparrow_cil.exp ->
-  bool ->
-  Dom.t ->
-  ItvDom.Val.t
+  ?spec:Spec.t -> BasicDom.Node.t -> Sparrow_cil.exp -> Dom.t -> ItvDom.Val.t
 
 val eval_string_alloc : BasicDom.Node.t -> string -> Dom.t -> ItvDom.Val.t

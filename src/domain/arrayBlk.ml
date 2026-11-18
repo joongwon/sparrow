@@ -11,123 +11,27 @@
 (* Abstract Array Block *)
 
 open AbsDom
-open ProdDom
 open BasicDom
 open Vocab
-open StructBlk
 
-(* The byte size of an element: one known non-negative size or unknown.  It
-   is set by allocation and by every cast, so it never needs a range. *)
-module Stride = struct
-  type t = Bot | Size of int | Top [@@deriving compare]
-
-  let bot = Bot
-  let top = Top
-
-  let of_int n =
-    if n < 0 then invalid_arg "ArrayBlk.Stride.of_int: negative size"
-    else Size n
-
-  let one = Size 1
-
-  let join a b =
-    match (a, b) with
-    | Bot, x | x, Bot -> x
-    | Size m, Size n when m = n -> a
-    | _ -> Top
-
-  let meet a b =
-    match (a, b) with
-    | Top, x | x, Top -> x
-    | Size m, Size n when m = n -> a
-    | _ -> Bot
-
-  let le a b =
-    match (a, b) with
-    | Bot, _ | _, Top -> true
-    | Size m, Size n -> m = n
-    | _ -> false
-
-  let eq a b = compare a b = 0
-
-  (* Finite height: widening is join. *)
-  let widen = join
-  let narrow a b = match a with Top -> b | _ -> a
-
-  let to_itv = function
-    | Bot -> Itv.bot
-    | Size n -> Itv.of_int n
-    | Top -> Itv.nat
-
-  let to_string = function
-    | Bot -> "bot"
-    | Size n -> string_of_int n
-    | Top -> "top"
-
-  let pp fmt x = Format.fprintf fmt "%s" (to_string x)
-end
-
+(* A pointer into an array: its offset and the array's size, both counted in
+   elements of the pointer's static pointee type. *)
 module ArrInfo = struct
-  type t = {
-    offset : Itv.t;
-    size : Itv.t;
-    stride : Stride.t;
-    null_pos : Itv.t;
-    structure : PowStruct.t;
-  }
-  [@@deriving compare]
+  type t = { offset : Itv.t; size : Itv.t } [@@deriving compare]
 
-  let bot =
-    {
-      offset = Itv.bot;
-      size = Itv.bot;
-      stride = Stride.bot;
-      null_pos = Itv.bot;
-      structure = PowStruct.bot;
-    }
-
-  let top =
-    {
-      offset = Itv.top;
-      size = Itv.top;
-      stride = Stride.top;
-      null_pos = Itv.top;
-      structure = PowStruct.bot;
-    }
-
-  let input =
-    {
-      offset = Itv.zero;
-      size = Itv.pos;
-      stride = Stride.one;
-      null_pos = Itv.nat;
-      structure = PowStruct.bot;
-    }
-
-  let make (o, s, stride, null, structure) =
-    { offset = o; size = s; stride; null_pos = null; structure }
+  let bot = { offset = Itv.bot; size = Itv.bot }
+  let top = { offset = Itv.top; size = Itv.top }
+  let input = { offset = Itv.zero; size = Itv.pos }
 
   let join a1 a2 =
     if a1 == a2 then a2
     else
-      {
-        offset = Itv.join a1.offset a2.offset;
-        size = Itv.join a1.size a2.size;
-        stride = Stride.join a1.stride a2.stride;
-        null_pos = Itv.join a1.null_pos a2.null_pos;
-        structure = PowStruct.join a1.structure a2.structure;
-      }
+      { offset = Itv.join a1.offset a2.offset; size = Itv.join a1.size a2.size }
 
   let meet a1 a2 =
     if a1 == a2 then a2
     else
-      {
-        offset = Itv.meet a1.offset a2.offset;
-        size = Itv.meet a1.size a2.size;
-        stride = Stride.meet a1.stride a2.stride;
-        null_pos = Itv.meet a1.null_pos a2.null_pos;
-        structure = PowStruct.meet a1.structure a2.structure;
-      }
+      { offset = Itv.meet a1.offset a2.offset; size = Itv.meet a1.size a2.size }
 
   let widen a1 a2 =
     if a1 == a2 then a2
@@ -135,9 +39,6 @@ module ArrInfo = struct
       {
         offset = Itv.widen a1.offset a2.offset;
         size = Itv.widen a1.size a2.size;
-        stride = Stride.widen a1.stride a2.stride;
-        null_pos = Itv.widen a1.null_pos a2.null_pos;
-        structure = PowStruct.widen a1.structure a2.structure;
       }
 
   let narrow a1 a2 =
@@ -146,81 +47,34 @@ module ArrInfo = struct
       {
         offset = Itv.narrow a1.offset a2.offset;
         size = Itv.narrow a1.size a2.size;
-        stride = Stride.narrow a1.stride a2.stride;
-        null_pos = Itv.narrow a1.null_pos a2.null_pos;
-        structure = PowStruct.narrow a1.structure a2.structure;
       }
 
   let eq a1 a2 =
-    if a1 == a2 then true
-    else
-      Itv.eq a1.offset a2.offset && Itv.eq a1.size a2.size
-      && Stride.eq a1.stride a2.stride
-      && Itv.eq a1.null_pos a2.null_pos
-      && PowStruct.eq a1.structure a2.structure
+    a1 == a2 || (Itv.eq a1.offset a2.offset && Itv.eq a1.size a2.size)
 
   let le a1 a2 =
-    if a1 == a2 then true
-    else
-      Itv.le a1.offset a2.offset && Itv.le a1.size a2.size
-      && Stride.le a1.stride a2.stride
-      && Itv.le a1.null_pos a2.null_pos
-      && PowStruct.le a1.structure a2.structure
+    a1 == a2 || (Itv.le a1.offset a2.offset && Itv.le a1.size a2.size)
 
-  let resize orig_st new_st x =
-    Itv.divide (Itv.times x (Stride.to_itv orig_st)) (Stride.to_itv new_st)
+  (* Elements of [from] bytes counted as elements of [into] bytes. *)
+  let resize from into x = Itv.divide (Itv.times x from) into
 
-  let cast typ arr =
-    match typ with
-    | Sparrow_cil.TPtr ((Sparrow_cil.TComp (comp, _) as t'), _) ->
-        let new_stride =
-          try Stride.of_int (CilHelper.byteSizeOf t') with _ -> Stride.top
-        in
-        {
-          offset = resize arr.stride new_stride arr.offset;
-          size = resize arr.stride new_stride arr.size;
-          null_pos = resize arr.stride new_stride arr.null_pos;
-          stride = new_stride;
-          structure = PowStruct.add comp.Sparrow_cil.cname arr.structure;
-        }
-    | Sparrow_cil.TPtr (t', _) | Sparrow_cil.TArray (t', _, _) ->
-        let new_stride =
-          try Stride.of_int (CilHelper.byteSizeOf t') with _ -> Stride.top
-        in
-        {
-          arr with
-          offset = resize arr.stride new_stride arr.offset;
-          size = resize arr.stride new_stride arr.size;
-          null_pos = resize arr.stride new_stride arr.null_pos;
-          stride = new_stride;
-        }
-    | _ -> arr
-
-  let weak_plus_size arr i =
-    { arr with size = Itv.join arr.size (Itv.plus i arr.size) }
+  let cast from into arr =
+    { offset = resize from into arr.offset; size = resize from into arr.size }
 
   let plus_offset arr i = { arr with offset = Itv.plus arr.offset i }
   let minus_offset arr i = { arr with offset = Itv.minus arr.offset i }
-  let set_null_pos arr i = { arr with null_pos = i }
-  let plus_null_pos arr i = { arr with null_pos = Itv.plus arr.null_pos i }
 
   let to_string arr =
-    "(" ^ Itv.to_string arr.offset ^ ", " ^ Itv.to_string arr.size ^ ", "
-    ^ Stride.to_string arr.stride
-    ^ ", " ^ Itv.to_string arr.null_pos ^ ", "
-    ^ PowStruct.to_string arr.structure
-    ^ ")"
+    "(" ^ Itv.to_string arr.offset ^ ", " ^ Itv.to_string arr.size ^ ")"
 
   let pp fmt arr =
-    Format.fprintf fmt "@[<hov 2>( %a, %a, %a, %a, %a )@]" Itv.pp arr.offset
-      Itv.pp arr.size Stride.pp arr.stride Itv.pp arr.null_pos PowStruct.pp
-      arr.structure
+    Format.fprintf fmt "@[<hov 2>( %a, %a )@]" Itv.pp arr.offset Itv.pp arr.size
 end
 
-include MapDom.MakeLAT (Allocsite) (ArrInfo)
+include MapDom.MakeLAT (Loc) (ArrInfo)
 
-let make : Allocsite.t -> Itv.t -> Itv.t -> Stride.t -> Itv.t -> t =
- fun a o sz st np -> add a (ArrInfo.make (o, sz, st, np, PowStruct.bot)) bot
+let make : Loc.t -> Itv.t -> Itv.t -> t =
+ fun cell offset size -> add cell { ArrInfo.offset; size } bot
 
 let offsetof : t -> Itv.t =
  fun a -> fold (fun _ arr -> Itv.join arr.ArrInfo.offset) a Itv.bot
@@ -228,17 +82,13 @@ let offsetof : t -> Itv.t =
 let sizeof : t -> Itv.t =
  fun a -> fold (fun _ arr -> Itv.join arr.ArrInfo.size) a Itv.bot
 
-let nullof : t -> Itv.t =
- fun a -> fold (fun _ arr -> Itv.join arr.ArrInfo.null_pos) a Itv.bot
-
 let extern allocsite =
-  if !Options.top_location then top else add allocsite ArrInfo.top empty
+  if !Options.top_location then top
+  else add (Loc.of_allocsite allocsite) ArrInfo.top empty
 
 let input allocsite =
-  if !Options.top_location then top else add allocsite ArrInfo.input empty
-
-let weak_plus_size : t -> Itv.t -> t =
- fun arr i -> map (fun a -> ArrInfo.weak_plus_size a i) arr
+  if !Options.top_location then top
+  else add (Loc.of_allocsite allocsite) ArrInfo.input empty
 
 let plus_offset : t -> Itv.t -> t =
  fun arr i -> map (fun a -> ArrInfo.plus_offset a i) arr
@@ -246,46 +96,36 @@ let plus_offset : t -> Itv.t -> t =
 let minus_offset : t -> Itv.t -> t =
  fun arr i -> map (fun a -> ArrInfo.minus_offset a i) arr
 
-let set_null_pos : t -> Itv.t -> t =
- fun arr i -> map (fun a -> ArrInfo.set_null_pos a i) arr
+(* The byte size of the type a pointer or array type points to; an unknown
+   size is any non-negative one. *)
+let element_size typ =
+  match Sparrow_cil.unrollTypeDeep typ with
+  | Sparrow_cil.TPtr (t, _) | Sparrow_cil.TArray (t, _, _) -> (
+      try Some (Itv.of_int (CilHelper.byteSizeOf t)) with _ -> Some Itv.nat)
+  | _ -> None
 
-let plus_null_pos : t -> Itv.t -> t =
- fun arr i -> map (fun a -> ArrInfo.plus_null_pos a i) arr
+let is_cmd_arg = function
+  | Loc.Allocsite a -> Allocsite.is_cmd_arg a
+  | _ -> false
 
-let cast_array typ a =
-  mapi
-    (fun allocsite ->
-      if Allocsite.is_cmd_arg allocsite then id else ArrInfo.cast typ)
-    a
+(* A cast between pointer types counts the offset and size in elements of
+   the new pointee type. *)
+let cast_array ~from ~into a =
+  (* A non-pointer source (an integer holding an address) counts bytes. *)
+  let from = match element_size from with Some f -> f | None -> Itv.one in
+  match element_size into with
+  | Some i when not (Itv.eq from i) ->
+      mapi (fun cell -> if is_cmd_arg cell then id else ArrInfo.cast from i) a
+  | _ -> a
 
-let allocsites_of_array a = foldi (fun k _ -> BatSet.add k) a BatSet.empty
+let allocsites_of_array a =
+  foldi
+    (fun k _ acc ->
+      match k with Loc.Allocsite site -> BatSet.add site acc | _ -> acc)
+    a BatSet.empty
 
 let pow_loc_of_array : t -> PowLoc.t =
- fun array ->
-  let pow_loc_of_allocsite k _ acc = PowLoc.add (Loc.of_allocsite k) acc in
-  foldi pow_loc_of_allocsite array PowLoc.bot
-
-let struct_of_array a =
-  foldi
-    (fun k v ->
-      if PowStruct.bot <> v.ArrInfo.structure then
-        PowLoc.add (Loc.of_allocsite k)
-      else id)
-    a PowLoc.bot
-
-let append_field : t -> Sparrow_cil.fieldinfo -> PowLoc.t =
- fun s f ->
-  foldi
-    (fun a info ->
-      if
-        PowStruct.mem f.Sparrow_cil.fcomp.Sparrow_cil.cname
-          info.ArrInfo.structure
-      then
-        let loc = Loc.of_allocsite a in
-        PowLoc.add
-          (Loc.append_field loc f.Sparrow_cil.fname f.Sparrow_cil.ftype)
-      else id)
-    s PowLoc.bot
+ fun array -> foldi (fun k _ -> PowLoc.add k) array PowLoc.bot
 
 let to_string : t -> string =
  fun x ->

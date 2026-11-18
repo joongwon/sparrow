@@ -51,6 +51,7 @@ module Loc : sig
   val is_gvar : t -> bool
   val is_allocsite : t -> bool
   val is_ext_allocsite : t -> bool
+  val is_string_allocsite : t -> bool
   val is_field : t -> bool
   val of_gvar : string -> Sparrow_cil.typ -> t
   val of_lvar : Proc.t -> string -> Sparrow_cil.typ -> t

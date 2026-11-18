@@ -187,8 +187,8 @@ let add_prune_cond global cond feat =
   let output, _ = sem_fun cond (global.mem, global) in
   let pruned =
     Mem.exists
-      (fun k v ->
-        let v2 = Mem.find k output in
+      (fun k (v, _) ->
+        let v2 = Cell.fst (Mem.find k output) in
         let itv1 = Val.itv_of_val v in
         let itv2 = Val.itv_of_val v2 in
         Itv.le itv2 itv1 && not (Itv.eq itv1 itv2))
@@ -243,7 +243,7 @@ let add_cstring global cond_node cfg feat =
   PowLoc.fold
     (fun l feat ->
       let v = Mem.lookup (PowLoc.singleton l) global.mem in
-      let nullpos = ArrayBlk.nullof (Val.array_of_val v) in
+      let nullpos = ItvSemantics.null_of global.mem v in
       let locset =
         Val.pow_loc_of_val (Mem.lookup (PowLoc.singleton l) global.mem)
       in

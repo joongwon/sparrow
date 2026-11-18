@@ -30,7 +30,7 @@ let string_of_alarminfo offset size diff =
   ^ ", size - offset: " ^ Itv.to_string diff
 
 let check packconf pid v1 v2opt v2exp ptrmem mem :
-    (status * Allocsite.t option * string) list =
+    (status * Loc.t option * string) list =
   let arr = ItvDom.Val.array_of_val v1 in
   if ArrayBlk.eq arr ArrayBlk.bot || ArrayBlk.cardinal arr > 1 then
     ItvAnalysis.check_bo v1 v2opt
@@ -45,8 +45,13 @@ let check packconf pid v1 v2opt v2exp ptrmem mem :
         let diff =
           match v2exp with
           | None -> Itv.minus arr.ArrInfo.size offset_idx
-          | Some e ->
-              OctSem.check_bo pid packconf a arr.ArrInfo.offset e ptrmem mem
+          | Some e -> (
+              (* The octagon knows the sizes of allocation sites only. *)
+              match a with
+              | Loc.Allocsite site ->
+                  OctSem.check_bo pid packconf site arr.ArrInfo.offset e ptrmem
+                    mem
+              | _ -> Itv.minus arr.ArrInfo.size offset_idx)
         in
         let status =
           if Itv.is_bot offset_idx || Itv.is_bot arr.ArrInfo.size then
@@ -141,17 +146,15 @@ let inspect_aexp :
     | Strcpy (e1, e2, loc) ->
         let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 ptrmem in
         let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 ptrmem in
-        let v2 =
-          ItvDom.Val.of_itv (ArrayBlk.nullof (ItvDom.Val.array_of_val v2))
-        in
+        let v2 = ItvDom.Val.of_itv (ItvSemantics.null_of ptrmem v2) in
         check packconf pid v1 (Some v2) None ptrmem mem
         |> List.map (fun (status, a, desc) ->
             { node; exp = aexp; loc; allocsite = a; status; desc; src = None })
     | Strcat (e1, e2, loc) ->
         let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 ptrmem in
         let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 ptrmem in
-        let np1 = ArrayBlk.nullof (ItvDom.Val.array_of_val v1) in
-        let np2 = ArrayBlk.nullof (ItvDom.Val.array_of_val v2) in
+        let np1 = ItvSemantics.null_of ptrmem v1 in
+        let np2 = ItvSemantics.null_of ptrmem v2 in
         let np = ItvDom.Val.of_itv (Itv.plus np1 np2) in
         check packconf pid v1 (Some np) None ptrmem mem
         |> List.map (fun (status, a, desc) ->
@@ -187,9 +190,7 @@ let inspect_alarm : Global.t -> Spec.t -> Table.t -> Report.query list =
       let aexps = AlarmExp.collect cmd in
       let qs =
         list_fold
-          (fun aexp ->
-            if ptrmem = ItvDom.Mem.bot then id (* dead code *)
-            else inspect_aexp spec.Spec.locset node aexp ptrmem mem)
+          (fun aexp -> inspect_aexp spec.Spec.locset node aexp ptrmem mem)
           aexps qs
       in
       (qs, k + 1))

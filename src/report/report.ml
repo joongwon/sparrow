@@ -29,7 +29,7 @@ type query = {
   node : InterCfg.node;
   exp : AlarmExp.t;
   loc : Sparrow_cil.location;
-  allocsite : Allocsite.t option;
+  allocsite : Loc.t option;
   src : (InterCfg.node * Sparrow_cil.location) option;
   status : status;
   desc : string;
@@ -92,7 +92,7 @@ let string_of_query q =
   CilHelper.s_location q.loc ^ " " ^ AlarmExp.to_string q.exp ^ " @"
   ^ InterCfg.Node.to_string q.node
   ^ ":  "
-  ^ (match q.allocsite with Some a -> Allocsite.to_string a | _ -> "")
+  ^ (match q.allocsite with Some a -> Loc.to_string a | _ -> "")
   ^ "  " ^ q.desc ^ " "
   ^ status_to_string (get_status [ q ])
 
@@ -103,7 +103,7 @@ let filter_extern partition =
         (List.exists
            (fun q ->
              match q.allocsite with
-             | Some allocsite -> Allocsite.is_ext_allocsite allocsite
+             | Some allocsite -> Loc.is_ext_allocsite allocsite
              | None -> false)
            ql))
     partition
@@ -166,9 +166,7 @@ let filter_allocsite partition =
            (fun q ->
              match q.allocsite with
              | Some allocsite ->
-                 BatSet.mem
-                   (Allocsite.to_string allocsite)
-                   !Options.filter_allocsite
+                 BatSet.mem (Loc.to_string allocsite) !Options.filter_allocsite
              | None -> false)
            ql))
     partition
@@ -203,7 +201,7 @@ let display_alarms title alarms_part =
           prerr_string
             (":  " ^ q.desc ^ " " ^ status_to_string (get_status [ q ]));
           match q.allocsite with
-          | Some a -> prerr_endline (", allocsite: " ^ Allocsite.to_string a)
+          | Some a -> prerr_endline (", allocsite: " ^ Loc.to_string a)
           | _ -> prerr_newline ())
         qs)
     alarms_part

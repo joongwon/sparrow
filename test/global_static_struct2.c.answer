@@ -4,15 +4,15 @@ Excluded variable-arguments functions : []
 Excluded recursive functions : []
 Excluded too large functions : []
 #Procs : 2
-#Nodes : 38
+#Nodes : 31
 #frame locals: 0
-#Nodes in def-use graph : 29
-#Edges in def-use graph : 43
-#Locs on def-use graph : 43
+#Nodes in def-use graph : 21
+#Edges in def-use graph : 19
+#Locs on def-use graph : 19
 
 = Alarms =
 
-#queries                 : 9
+#queries                 : 10
 #queries mod alarm point : 4
 #proven                  : 4
 #unproven                : 0

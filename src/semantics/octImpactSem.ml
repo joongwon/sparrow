@@ -167,7 +167,7 @@ let model_realloc mode global node pid lvo exps ptrmem (mem, global) =
   | Some l, _ :: size :: _ ->
       let lv = ItvSem.eval_lv pid l ptrmem |> PowOctLoc.of_locs in
       let ptrs =
-        ItvSem.eval_array_alloc node size false ptrmem
+        ItvSem.eval_array_alloc node size ptrmem
         |> ItvDom.Val.allocsites_of_val |> PowOctLoc.of_sizes
       in
       alloc mode global ptrmem pid lv ptrs size mem
@@ -178,7 +178,7 @@ let model_calloc mode global node pid lvo exps ptrmem (mem, global) =
   | Some l, size :: _ ->
       let lv = ItvSem.eval_lv pid l ptrmem |> PowOctLoc.of_locs in
       let ptrs =
-        ItvSem.eval_array_alloc node size false ptrmem
+        ItvSem.eval_array_alloc node size ptrmem
         |> ItvDom.Val.allocsites_of_val |> PowOctLoc.of_sizes
       in
       alloc mode global ptrmem pid lv ptrs size mem
@@ -326,10 +326,10 @@ let rec run_cmd mode node cmd ptrmem (mem, global) =
   | IntraCfg.Cmd.Cset (l, e, _) ->
       let lv = ItvSem.eval_lv pid l ptrmem |> PowOctLoc.of_locs in
       set mode global ptrmem pid lv e mem
-  | IntraCfg.Cmd.Calloc (l, IntraCfg.Cmd.Array e, is_static, _) ->
+  | IntraCfg.Cmd.Calloc (l, e, _) ->
       let lv = ItvSem.eval_lv pid l ptrmem |> PowOctLoc.of_locs in
       let ptrs =
-        ItvSem.eval_array_alloc node e is_static ptrmem
+        ItvSem.eval_array_alloc node e ptrmem
         |> ItvDom.Val.allocsites_of_val |> PowOctLoc.of_sizes
       in
       alloc mode global ptrmem pid lv ptrs e mem

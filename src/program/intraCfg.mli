@@ -34,7 +34,7 @@ module Cmd : sig
     | CLoop of Sparrow_cil.location
     (* final graph has the following cmds only *)
     | Cset of Sparrow_cil.lval * Sparrow_cil.exp * Sparrow_cil.location
-    | Calloc of Sparrow_cil.lval * alloc * static * Sparrow_cil.location
+    | Calloc of Sparrow_cil.lval * Sparrow_cil.exp * Sparrow_cil.location
     | Csalloc of Sparrow_cil.lval * string * Sparrow_cil.location
     | Cfalloc of Sparrow_cil.lval * Sparrow_cil.fundec * Sparrow_cil.location
     | Cassume of Sparrow_cil.exp * Sparrow_cil.location
@@ -52,9 +52,6 @@ module Cmd : sig
         * string list
         * Sparrow_cil.location
     | Cskip
-
-  and alloc = Array of Sparrow_cil.exp | Struct of Sparrow_cil.compinfo
-  and static = bool
 
   val fromCilStmt : Sparrow_cil.stmtkind -> t
   val to_string : t -> string
@@ -96,13 +93,7 @@ type global_provenance_row = {
 (** Closed role vocabulary for a generated temporary in the synthetic [_G_]
     construction. These roles describe the source construction event, not a
     later CFG opcode or an emitted-command ordinal. *)
-type construction_temp_generation_role =
-  | Aggregate_storage
-  | Nested_array_storage
-  | Field_storage
-  | Array_loop_index
-  | String_literal
-  | Sizeof_string
+type construction_temp_generation_role = String_literal | Sizeof_string
 
 type construction_temp_outcome =
   | Construction_temp_survives of Node.t list

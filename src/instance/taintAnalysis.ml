@@ -65,11 +65,7 @@ let inspect_alarm global spec inputof =
       let cmd = InterCfg.cmdof global.icfg node in
       let aexps = AlarmExp.collect cmd in
       let qs =
-        list_fold
-          (fun aexp ->
-            if ptrmem = ItvDom.Mem.bot then id (* dead code *)
-            else inspect_aexp node aexp ptrmem mem)
-          aexps qs
+        list_fold (fun aexp -> inspect_aexp node aexp ptrmem mem) aexps qs
       in
       (qs, k + 1))
     nodes ([], 0)
@@ -77,7 +73,7 @@ let inspect_alarm global spec inputof =
 
 let get_locset mem =
   ItvDom.Mem.foldi
-    (fun l v locset ->
+    (fun l (v, _) locset ->
       locset |> PowLoc.add l
       |> PowLoc.union (ItvDom.Val.pow_loc_of_val v)
       |> BatSet.fold

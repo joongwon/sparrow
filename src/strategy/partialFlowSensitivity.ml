@@ -555,8 +555,7 @@ let extract1 :
     |> (match cmd with
       | Cset (lv, e, _) -> extract_set pid (lv, e) mem global
       | Cassume (e, _) -> extract_assume node pid e mem global
-      | Calloc (lv, IntraCfg.Cmd.Array e, _, _) ->
-          extract_alloc node pid (lv, e) mem global
+      | Calloc (lv, e, _) -> extract_alloc node pid (lv, e) mem global
       | Ccall (lvo, fe, el, _) -> extract_call node pid (lvo, fe, el) mem global
       | _ -> id)
     |> extract_used_index pid mem cmd

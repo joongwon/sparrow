@@ -63,7 +63,7 @@ module Cmd = struct
     | CLoop of location
     (* final graph has the following cmds only *)
     | Cset of lval * exp * location
-    | Calloc of lval * alloc * static * location
+    | Calloc of lval * exp * location
     | Csalloc of lval * string * location
     | Cfalloc of lval * fundec * location
     | Cassume of exp * location
@@ -77,9 +77,6 @@ module Cmd = struct
         * string list
         * location
     | Cskip
-
-  and alloc = Array of exp | Struct of compinfo
-  and static = bool
 
   let fromCilStmt : Sparrow_cil.stmtkind -> t =
    fun s ->
@@ -95,9 +92,7 @@ module Cmd = struct
     match c with
     | Cinstr instrs -> s_instrs instrs
     | Cset (lv, e, _) -> "set(" ^ s_lv lv ^ "," ^ s_exp e ^ ")"
-    | Calloc (lv, Array e, _, _) -> "alloc(" ^ s_lv lv ^ ",[" ^ s_exp e ^ "])"
-    | Calloc (lv, Struct compinfo, _, _) ->
-        "alloc(" ^ s_lv lv ^ ",{" ^ compinfo.cname ^ "})"
+    | Calloc (lv, e, _) -> "alloc(" ^ s_lv lv ^ ",[" ^ s_exp e ^ "])"
     | Csalloc (lv, s, _) -> "salloc(" ^ s_lv lv ^ ", \"" ^ s ^ "\")"
     | Cfalloc (lv, f, _) -> "falloc(" ^ s_lv lv ^ ", " ^ f.svar.vname ^ ")"
     | Ccall (Some lv, fexp, params, _) ->
@@ -116,7 +111,7 @@ module Cmd = struct
    fun c ->
     match c with
     | Cset (_, _, l)
-    | Calloc (_, _, _, l)
+    | Calloc (_, _, l)
     | Csalloc (_, _, l)
     | Cfalloc (_, _, l)
     | Ccall (_, _, _, l) ->
@@ -233,19 +228,9 @@ type pending_global_provenance_row = {
   pending_storage : bool;
 }
 
-type construction_temp_generation_role =
-  | Aggregate_storage
-  | Nested_array_storage
-  | Field_storage
-  | Array_loop_index
-  | String_literal
-  | Sizeof_string
+type construction_temp_generation_role = String_literal | Sizeof_string
 
 let string_of_construction_temp_generation_role = function
-  | Aggregate_storage -> "aggregate-storage"
-  | Nested_array_storage -> "nested-array-storage"
-  | Field_storage -> "field-storage"
-  | Array_loop_index -> "array-loop-index"
   | String_literal -> "string-literal"
   | Sizeof_string -> "sizeof-string"
 
@@ -683,267 +668,6 @@ let flatten_instructions : t -> t =
       | _ -> g)
     g g
 
-let make_array :
-    Sparrow_cil.fundec ->
-    Sparrow_cil.lval ->
-    Sparrow_cil.typ ->
-    Sparrow_cil.exp ->
-    Sparrow_cil.location ->
-    node ->
-    t ->
-    node * t =
- fun fd lv typ exp loc entry g ->
-  let alloc_node = Node.make () in
-  let size =
-    Sparrow_cil.BinOp
-      (Sparrow_cil.Mult, Sparrow_cil.SizeOf typ, exp, Sparrow_cil.intType)
-  in
-  let alloc_cmd = Cmd.Calloc (lv, Cmd.Array size, true, loc) in
-  (alloc_node, g |> add_cmd alloc_node alloc_cmd |> add_edge entry alloc_node)
-
-let make_struct :
-    Sparrow_cil.fundec ->
-    Sparrow_cil.lval ->
-    Sparrow_cil.compinfo ->
-    Sparrow_cil.location ->
-    node ->
-    t ->
-    node * t =
- fun fd lv comp loc entry g ->
-  let alloc_node = Node.make () in
-  let alloc_cmd = Cmd.Calloc (lv, Cmd.Struct comp, true, loc) in
-  (alloc_node, g |> add_cmd alloc_node alloc_cmd |> add_edge entry alloc_node)
-
-let make_init_loop ?(path = "type/unknown") fd lv exp loc entry f g =
-  (* i = 0 *)
-  let init_node = Node.make () in
-  let idxinfo = Sparrow_cil.makeTempVar fd (Sparrow_cil.TInt (IInt, [])) in
-  let idx = (Sparrow_cil.Var idxinfo, Sparrow_cil.NoOffset) in
-  let init_value =
-    Sparrow_cil.Const
-      (Sparrow_cil.CInt (Sparrow_cil.Cilint.zero_cilint, IInt, None))
-  in
-  let init_cmd = Cmd.Cset (idx, init_value, loc) in
-  let g = add_cmd init_node init_cmd g in
-  record_construction_temp ~path:(path ^ "/loop-index")
-    ~child_path:"type-driven" ~role:Array_loop_index
-    ~typ:idxinfo.Sparrow_cil.vtype ~payload:"zero-init" ~lvalue:idx
-    (NodeSet.singleton init_node);
-  (* while (i < exp) *)
-  let skip_node = Node.make () in
-  let g = add_cmd skip_node Cmd.Cskip g in
-  let g = add_edge init_node skip_node g in
-  let g = add_edge entry init_node g in
-  let assume_node = Node.make () in
-  let cond =
-    Sparrow_cil.BinOp
-      (Sparrow_cil.Lt, Sparrow_cil.Lval idx, exp, Sparrow_cil.intType)
-  in
-  let assume_cmd = Cmd.Cassume (cond, loc) in
-  let g = add_cmd assume_node assume_cmd g in
-  let g = add_edge skip_node assume_node g in
-  let nassume_node = Node.make () in
-  let nassume_cmd =
-    Cmd.Cassume
-      (Sparrow_cil.UnOp (Sparrow_cil.LNot, cond, Sparrow_cil.intType), loc)
-  in
-  let g = add_cmd nassume_node nassume_cmd g in
-  let g = add_edge skip_node nassume_node g in
-  let element =
-    Sparrow_cil.addOffsetLval
-      (Index (Lval (Var idxinfo, NoOffset), NoOffset))
-      lv
-  in
-  (* loop body *)
-  let term, g = f assume_node element g in
-  (* i++ *)
-  let incr_node = Node.make () in
-  let incr_cmd =
-    Cmd.Cset
-      ( idx,
-        Sparrow_cil.BinOp
-          ( Sparrow_cil.PlusA,
-            Sparrow_cil.Lval idx,
-            Sparrow_cil.Const
-              (Sparrow_cil.CInt
-                 (Sparrow_cil.Cilint.cilint_of_int64 Int64.one, IInt, None)),
-            Sparrow_cil.intType ),
-        loc )
-  in
-  let g = add_cmd incr_node incr_cmd g in
-  let g = add_edge term incr_node g in
-  let g = add_edge incr_node skip_node g in
-  (nassume_node, g)
-
-let rec make_nested_array ?(path = "type/unknown") :
-    Sparrow_cil.fundec ->
-    Sparrow_cil.lval ->
-    Sparrow_cil.typ ->
-    Sparrow_cil.exp ->
-    Sparrow_cil.location ->
-    node ->
-    bool ->
-    t ->
-    node * t =
- fun fd lv typ exp loc entry initialize g ->
-  let typ = unrollTypeDeep typ in
-  match typ with
-  | TArray (t, Some size, _) ->
-      let f assume_node element g =
-        (* tmp = malloc(size); lv[i] = tmp *)
-        let tmp =
-          ( Sparrow_cil.Var
-              (Sparrow_cil.makeTempVar fd
-                 (Sparrow_cil.TPtr (Sparrow_cil.TVoid [], []))),
-            Sparrow_cil.NoOffset )
-        in
-        let term, g = make_array fd tmp t size loc assume_node g in
-        record_construction_temp
-          ~path:(path ^ "/nested-array/storage")
-          ~child_path:"type-driven" ~role:Nested_array_storage
-          ~typ:(Sparrow_cil.typeOfLval tmp)
-          ~payload:("extent:" ^ CilHelper.s_exp size)
-          ~lvalue:tmp (NodeSet.singleton term);
-        let cast_node = Node.make () in
-        let cast_cmd =
-          Cmd.Cset
-            ( element,
-              Sparrow_cil.CastE (Explicit, TPtr (t, []), Sparrow_cil.Lval tmp),
-              loc )
-        in
-        let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
-        make_nested_array ~path:(path ^ "/nested-array") fd element t size loc
-          cast_node initialize g
-      in
-      make_init_loop ~path fd lv exp loc entry f g
-  | TComp (comp, _) ->
-      let f assume_node element g =
-        (* tmp = malloc(size); lv[i] = tmp *)
-        let term, g = make_struct fd element comp loc assume_node g in
-        generate_allocs_field ~path:(path ^ "/element-struct") comp.cfields
-          element fd term g
-      in
-      make_init_loop ~path fd lv exp loc entry f g
-  | _ when initialize ->
-      let f assume_node element g =
-        (* lv[i] = 0 *)
-        let init_node = Node.make () in
-        let init_cmd = Cmd.Cset (element, Sparrow_cil.zero, loc) in
-        ( init_node,
-          g |> add_cmd init_node init_cmd |> add_edge assume_node init_node )
-      in
-      make_init_loop ~path fd lv exp loc entry f g
-  | _ -> (entry, g)
-
-and generate_allocs_field ?(path = "type/unknown") :
-    Sparrow_cil.fieldinfo list ->
-    Sparrow_cil.lval ->
-    Sparrow_cil.fundec ->
-    node ->
-    t ->
-    node * t =
- fun fl lv fd entry g ->
-  match fl with
-  | [] -> (entry, g)
-  | fieldinfo :: t ->
-      begin match Sparrow_cil.unrollTypeDeep fieldinfo.ftype with
-      | TArray (typ, Some exp, _) ->
-          let field =
-            addOffsetLval
-              (Sparrow_cil.Field (fieldinfo, Sparrow_cil.NoOffset))
-              lv
-          in
-          let tmp =
-            ( Sparrow_cil.Var
-                (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType),
-              Sparrow_cil.NoOffset )
-          in
-          let term, g = make_array fd tmp typ exp fieldinfo.floc entry g in
-          let field_path = path ^ "/field:" ^ fieldinfo.Sparrow_cil.fname in
-          record_construction_temp ~path:(field_path ^ "/storage")
-            ~child_path:"type-driven" ~role:Field_storage
-            ~typ:(Sparrow_cil.typeOfLval tmp)
-            ~payload:("extent:" ^ CilHelper.s_exp exp)
-            ~lvalue:tmp (NodeSet.singleton term);
-          let cast_node = Node.make () in
-          let cast_cmd =
-            Cmd.Cset
-              ( field,
-                Sparrow_cil.CastE
-                  ( Sparrow_cil.Explicit,
-                    Sparrow_cil.TPtr (typ, []),
-                    Sparrow_cil.Lval tmp ),
-                fieldinfo.floc )
-          in
-          let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
-          let term, g =
-            make_nested_array ~path:field_path fd field typ exp fieldinfo.floc
-              cast_node false g
-          in
-          generate_allocs_field ~path t lv fd term g
-      | TComp (comp, _) ->
-          let field =
-            addOffsetLval
-              (Sparrow_cil.Field (fieldinfo, Sparrow_cil.NoOffset))
-              lv
-          in
-          let term, g = make_struct fd field comp fieldinfo.floc entry g in
-          let term, g =
-            generate_allocs_field
-              ~path:(path ^ "/field:" ^ fieldinfo.Sparrow_cil.fname)
-              comp.cfields field fd term g
-          in
-          generate_allocs_field ~path t lv fd term g
-      | _ -> generate_allocs_field ~path t lv fd entry g
-      end
-
-and get_base_type typ =
-  match typ with TArray (t, _, _) | TPtr (t, _) -> get_base_type t | _ -> typ
-
-let rec generate_allocs :
-    Sparrow_cil.fundec -> Sparrow_cil.varinfo list -> node -> t -> node * t =
- fun fd vl entry g ->
-  match vl with
-  | [] -> (entry, g)
-  | varinfo :: t ->
-      begin match Sparrow_cil.unrollTypeDeep varinfo.vtype with
-      | TArray (typ, Some exp, _) ->
-          let lv = (Sparrow_cil.Var varinfo, Sparrow_cil.NoOffset) in
-          let tmp =
-            ( Sparrow_cil.Var
-                (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType),
-              Sparrow_cil.NoOffset )
-          in
-          let term, g = make_array fd tmp typ exp varinfo.vdecl entry g in
-          let cast_node = Node.make () in
-          let cast_cmd =
-            Cmd.Cset
-              ( lv,
-                Sparrow_cil.CastE
-                  ( Sparrow_cil.Explicit,
-                    Sparrow_cil.TPtr (unrollTypeDeep typ, []),
-                    Sparrow_cil.Lval tmp ),
-                varinfo.vdecl )
-          in
-          let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
-          let term, g =
-            make_nested_array
-              ~path:("type/local:" ^ varinfo.Sparrow_cil.vname)
-              fd lv typ exp varinfo.vdecl cast_node false g
-          in
-          generate_allocs fd t term g
-      | TComp (comp, _) ->
-          let lv = (Sparrow_cil.Var varinfo, Sparrow_cil.NoOffset) in
-          let term, g = make_struct fd lv comp varinfo.vdecl entry g in
-          let term, g =
-            generate_allocs_field
-              ~path:("type/local:" ^ varinfo.Sparrow_cil.vname)
-              comp.cfields lv fd term g
-          in
-          generate_allocs fd t term g
-      | _ -> generate_allocs fd t entry g
-      end
-
 let replace_node_graph : node -> node -> node -> t -> t =
  fun old entry exit g ->
   let rec replacement_nodes seen = function
@@ -1198,54 +922,11 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t =
       | _ -> g)
     g g
 
-(** transform malloc to Calloc *)
+(** transform malloc to Calloc: one uninitialized block *)
 let transform_allocs : Sparrow_cil.fundec -> t -> t =
  fun fd g ->
-  let rec transform lv exp loc node g =
-    match exp with
-    | BinOp (Mult, SizeOf typ, e, _) | BinOp (Mult, e, SizeOf typ, _) -> begin
-        let typ = Sparrow_cil.unrollTypeDeep typ in
-        match (lv, typ) with
-        | (Var v, NoOffset), TComp (_, _) ->
-            (* dynamic struct array alloc *)
-            let cmd = Cmd.Calloc (lv, Cmd.Array exp, false, loc) in
-            let g = add_cmd node cmd g in
-            make_nested_array fd lv typ e loc node false g
-        | _ ->
-            let cmd = Cmd.Calloc (lv, Cmd.Array exp, false, loc) in
-            let g = add_cmd node cmd g in
-            (node, g)
-      end
-    | SizeOf typ | CastE (_, _, SizeOf typ) -> begin
-        let typ = Sparrow_cil.unrollTypeDeep typ in
-        match (lv, typ) with
-        | (Var v, NoOffset), TComp (comp, _) ->
-            (* dynamic struct alloc *)
-            let cast_node = Node.make () in
-            let cast_cmd =
-              Cmd.Cset
-                ( lv,
-                  Sparrow_cil.CastE
-                    ( Sparrow_cil.Explicit,
-                      Sparrow_cil.TPtr (typ, []),
-                      Sparrow_cil.Lval lv ),
-                  loc )
-            in
-            g
-            |> add_cmd node (Cmd.Calloc (lv, Cmd.Array exp, false, loc))
-            |> add_cmd cast_node cast_cmd |> add_edge node cast_node
-            |> generate_allocs_field comp.cfields (Mem (Lval lv), NoOffset) fd
-                 cast_node
-        | _, _ ->
-            let cmd = Cmd.Calloc (lv, Cmd.Array exp, false, loc) in
-            let g = add_cmd node cmd g in
-            (node, g)
-      end
-    | SizeOfE e -> transform lv (SizeOf (Sparrow_cil.typeOf e)) loc node g
-    | e ->
-        let cmd = Cmd.Calloc (lv, Cmd.Array exp, false, loc) in
-        let g = add_cmd node cmd g in
-        (node, g)
+  let transform lv exp loc node g =
+    (node, add_cmd node (Cmd.Calloc (lv, exp, loc)) g)
   in
   fold_node
     (fun n g ->
@@ -1342,6 +1023,8 @@ let compute_dom : t -> t =
 
 let compute_scc : t -> t = fun g -> { g with scc_list = Scc.scc_list g.graph }
 
+(* C's zero initialization of a global without initializer, through its
+   arrays (one element stands for all) and fields. *)
 let rec process_gvardecl :
     Sparrow_cil.fundec ->
     Sparrow_cil.lval ->
@@ -1351,43 +1034,27 @@ let rec process_gvardecl :
     node * t =
  fun fd lv loc entry g ->
   match Sparrow_cil.unrollTypeDeep (Sparrow_cil.typeOfLval lv) with
-  | TArray (typ, Some exp, _) ->
-      let tmp =
-        ( Sparrow_cil.Var (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType),
-          Sparrow_cil.NoOffset )
+  | TArray _ ->
+      let element =
+        Sparrow_cil.addOffsetLval
+          (Sparrow_cil.Index (Sparrow_cil.zero, Sparrow_cil.NoOffset))
+          lv
       in
-      let term, g = make_array fd tmp typ exp loc entry g in
-      record_construction_temp ~path:"type/root-array/storage"
-        ~child_path:"type-driven" ~role:Aggregate_storage
-        ~typ:(Sparrow_cil.typeOfLval tmp)
-        ~payload:("extent:" ^ CilHelper.s_exp exp)
-        ~lvalue:tmp (NodeSet.singleton term);
-      let cast_node = Node.make () in
-      let cast_cmd =
-        Cmd.Cset
-          ( lv,
-            Sparrow_cil.CastE
-              ( Sparrow_cil.Explicit,
-                Sparrow_cil.TPtr (typ, []),
-                Sparrow_cil.Lval tmp ),
-            loc )
-      in
-      let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
-      let term, g =
-        make_nested_array ~path:"type/root-array" fd lv typ exp loc cast_node
-          true g
-      in
-      (term, g)
-  | TInt (_, _) | TFloat (_, _) ->
+      process_gvardecl fd element loc entry g
+  | TInt (_, _) | TFloat (_, _) | TEnum (_, _) ->
       let node = Node.make () in
       let cmd = Cmd.Cset (lv, Sparrow_cil.zero, loc) in
       (node, g |> add_cmd node cmd |> add_edge entry node)
   | TComp (comp, _) ->
-      let term, g = make_struct fd lv comp loc entry g in
-      let term, g =
-        generate_allocs_field ~path:"type/root-struct" comp.cfields lv fd term g
-      in
-      (term, g)
+      List.fold_left
+        (fun (entry, g) field ->
+          let lv =
+            Sparrow_cil.addOffsetLval
+              (Sparrow_cil.Field (field, Sparrow_cil.NoOffset))
+              lv
+          in
+          process_gvardecl fd lv loc entry g)
+        (entry, g) comp.cfields
   | _ -> (entry, g)
 
 let rec process_init :
@@ -1524,8 +1191,6 @@ let init : Sparrow_cil.fundec -> Sparrow_cil.location -> t =
       generate_cmd_args fd loc g
     else (Node.ENTRY, g)
   in
-  (* generate alloc cmds for static allocations *)
-  let term, g = generate_allocs fd fd.slocals term g in
   let g = add_edge term entry g in
   let nodes = nodesof g in
   let lasts = List.filter (fun n -> succ n g = []) nodes in
@@ -2137,7 +1802,7 @@ let finish_global_provenance ~unreachable g =
       in
       match find_cmd node g with
       | Cmd.Cset (lvalue, _, _)
-      | Cmd.Calloc (lvalue, _, _, _)
+      | Cmd.Calloc (lvalue, _, _)
       | Cmd.Csalloc (lvalue, _, _)
       | Cmd.Cfalloc (lvalue, _, _) ->
           temporary_name lvalue

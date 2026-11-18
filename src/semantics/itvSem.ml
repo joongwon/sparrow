@@ -60,8 +60,8 @@ let var_of_varinfo = Sem.var_of_varinfo
 let eval_lv ?(spec = Spec.empty) pid lv mem = Sem.eval_lv spec pid lv mem
 let eval ?(spec = Spec.empty) pid e mem = Sem.eval spec pid e mem
 
-let eval_array_alloc ?(spec = Spec.empty) node e is_static mem =
-  Sem.array_alloc spec node e is_static mem
+let eval_array_alloc ?(spec = Spec.empty) node e mem =
+  Sem.array_alloc spec node e mem
 
 let eval_string_alloc node s _mem = Sem.string_alloc node s
 
@@ -79,11 +79,8 @@ let run :
       match InterCfg.cmdof global.icfg node with
       | IntraCfg.Cmd.Cset (l, e, _) ->
           (Sem.assign mode spec global.callgraph pid l e mem, global)
-      | IntraCfg.Cmd.Calloc (l, IntraCfg.Cmd.Array e, is_static, _) ->
-          ( Sem.array_assign mode spec global.callgraph node l e is_static mem,
-            global )
-      | IntraCfg.Cmd.Calloc (l, IntraCfg.Cmd.Struct s, _, _) ->
-          (Sem.struct_assign mode spec global.callgraph pid l s mem, global)
+      | IntraCfg.Cmd.Calloc (l, e, _) ->
+          (Sem.array_assign mode spec global.callgraph node l e mem, global)
       | IntraCfg.Cmd.Csalloc (l, s, _) ->
           (Sem.string_assign mode spec global.callgraph node l s mem, global)
       | IntraCfg.Cmd.Cfalloc (l, fd, _) ->

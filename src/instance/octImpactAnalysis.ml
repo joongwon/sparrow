@@ -27,7 +27,7 @@ module Spec = Analysis.Spec
 module Mem = OctImpactDom.Mem
 
 let check pid v1 v2opt v2exp ptrmem mem :
-    (AbsOct.t option * Allocsite.t option * string) list =
+    (AbsOct.t option * Loc.t option * string) list =
   let arr = ItvDom.Val.array_of_val v1 in
   if ArrayBlk.eq arr ArrayBlk.bot || ArrayBlk.cardinal arr > 1 then
     ItvAnalysis.check_bo v1 v2opt |> List.map (fun (s, a, d) -> (None, a, d))
@@ -39,9 +39,13 @@ let check pid v1 v2opt v2exp ptrmem mem :
           | None -> arr.ArrInfo.offset
           | Some v2 -> Itv.plus arr.ArrInfo.offset (ItvDom.Val.itv_of_val v2)
         in
-        let size_loc = OctLoc.of_size a in
         let oct_status =
           try
+            (* The octagon knows the sizes of allocation sites only. *)
+            let site =
+              match a with Loc.Allocsite site -> site | _ -> raise Not_found
+            in
+            let size_loc = OctLoc.of_size site in
             match (v2exp, arr.ArrInfo.size) with
             | Some (Sparrow_cil.Lval x), size
             | ( Some
@@ -163,9 +167,7 @@ let inspect_aexp :
     | Strcpy (e1, e2, loc) ->
         let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 ptrmem in
         let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 ptrmem in
-        let v2 =
-          ItvDom.Val.of_itv (ArrayBlk.nullof (ItvDom.Val.array_of_val v2))
-        in
+        let v2 = ItvDom.Val.of_itv (ItvSemantics.null_of ptrmem v2) in
         check pid v1 (Some v2) None ptrmem mem
         |> List.map (fun (status, a, desc) ->
             match status with
@@ -194,8 +196,8 @@ let inspect_aexp :
     | Strcat (e1, e2, loc) ->
         let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 ptrmem in
         let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 ptrmem in
-        let np1 = ArrayBlk.nullof (ItvDom.Val.array_of_val v1) in
-        let np2 = ArrayBlk.nullof (ItvDom.Val.array_of_val v2) in
+        let np1 = ItvSemantics.null_of ptrmem v1 in
+        let np2 = ItvSemantics.null_of ptrmem v2 in
         let np = ItvDom.Val.of_itv (Itv.plus np1 np2) in
         check pid v1 (Some np) None ptrmem mem
         |> List.map (fun (status, a, desc) ->
@@ -284,8 +286,7 @@ let display_alarms title alarms_part =
           prerr_string (InterCfg.Node.to_string q.node);
           prerr_string (":  " ^ q.desc);
           match q.allocsite with
-          | Some a ->
-              prerr_endline (", allocsite: " ^ Allocsite.to_string a ^ " ")
+          | Some a -> prerr_endline (", allocsite: " ^ Loc.to_string a ^ " ")
           | _ -> prerr_newline ())
         qs)
     alarms_part
@@ -325,11 +326,7 @@ let generate (global, itvinputof, itv_queries, inputof) =
       let cmd = InterCfg.cmdof global.icfg node in
       let aexps = AlarmExp.collect cmd in
       let qs =
-        list_fold
-          (fun aexp ->
-            if ptrmem = ItvDom.Mem.bot then id (* dead code *)
-            else inspect_aexp node aexp ptrmem mem)
-          aexps qs
+        list_fold (fun aexp -> inspect_aexp node aexp ptrmem mem) aexps qs
       in
       (qs, k + 1))
     nodes ([], 0)

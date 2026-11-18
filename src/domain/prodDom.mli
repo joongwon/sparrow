@@ -22,6 +22,21 @@ module Make
 end
 with type t = A.t * B.t
 
+module Make4
+    (A : CPO)
+    (B : CPO)
+    (C : CPO)
+    (D : CPO) : sig
+  include AbsDom.CPO
+
+  val make : A.t * B.t * C.t * D.t -> t
+  val fst : t -> A.t
+  val snd : t -> B.t
+  val trd : t -> C.t
+  val frth : t -> D.t
+end
+with type t = A.t * B.t * C.t * D.t
+
 module Make5
     (A : CPO)
     (B : CPO)

@@ -8,20 +8,14 @@ open ItvSemantics
 let ext_site name = Allocsite.allocsite_of_ext (Some name)
 let alloc_loc site = PowLoc.singleton (Loc.of_allocsite site)
 
+(* One element of the returned pointer's type, in a block of its own. *)
 let model_alloc_one mode spec cg pid lvo f mem =
   match lvo with
   | None -> mem
   | Some lv ->
-      let stride =
-        match f.vtype with
-        | TFun (TPtr (t, _), _, _, _) -> (
-            try ArrayBlk.Stride.of_int (CilHelper.byteSizeOf t)
-            with _ -> ArrayBlk.Stride.top)
-        | _ -> ArrayBlk.Stride.top
-      in
       let site = ext_site (SourceName.of_varinfo f) in
       let array =
-        Val.of_array (ArrayBlk.make site Itv.zero Itv.one stride Itv.nat)
+        Val.of_array (ArrayBlk.make (Loc.of_allocsite site) Itv.zero Itv.one)
       in
       let locations = alloc_loc site in
       let mem = update mode spec cg (eval_lv spec pid lv mem) array mem in
@@ -30,16 +24,14 @@ let model_alloc_one mode spec cg pid lvo f mem =
 let model_realloc mode spec cg node lvo expressions mem =
   match (lvo, expressions) with
   | None, _ -> mem
-  | Some lv, _ :: size :: _ -> array_assign mode spec cg node lv size false mem
+  | Some lv, _ :: size :: _ -> array_assign mode spec cg node lv size mem
   | Some _, _ -> failwith "Error: arguments of realloc are not given"
 
 let model_calloc mode spec cg node lvo expressions mem =
   match (lvo, expressions) with
   | None, _ -> mem
   | Some lv, n :: size :: _ ->
-      array_assign mode spec cg node lv
-        (BinOp (Mult, n, size, uintType))
-        false mem
+      array_assign mode spec cg node lv (BinOp (Mult, n, size, uintType)) mem
   | Some _, _ -> failwith "Error: arguments of realloc are not given"
 
 let model_scanf mode spec cg pid expressions mem =
@@ -56,19 +48,18 @@ let model_scanf mode spec cg pid expressions mem =
 let model_strdup mode spec cg node pid lvo expressions mem =
   match (lvo, expressions) with
   | Some lv, str :: _ ->
-      let site = Allocsite.allocsite_of_node node in
-      let source = Val.array_of_val (eval spec pid str mem) in
-      let size = ArrayBlk.sizeof source in
-      let null = ArrayBlk.nullof source in
-      let sources = ArrayBlk.pow_loc_of_array source in
-      let array =
-        ArrayBlk.make site Itv.zero (Itv.minus size Itv.zero)
-          ArrayBlk.Stride.one null
-      in
-      let locations = alloc_loc site in
+      let site = Loc.of_allocsite (Allocsite.allocsite_of_node node) in
+      let source = eval spec pid str mem in
+      let size = ArrayBlk.sizeof (Val.array_of_val source) in
+      let null = null_of mem source in
+      let sources = ArrayBlk.pow_loc_of_array (Val.array_of_val source) in
+      let array = ArrayBlk.make site Itv.zero (Itv.minus size Itv.zero) in
+      let locations = PowLoc.singleton site in
       let v = Val.join (Val.of_array array) (Val.of_pow_loc locations) in
       let mem = update mode spec cg (eval_lv spec pid lv mem) v mem in
-      update mode spec cg locations (Mem.lookup sources mem) mem
+      let mem = update mode spec cg locations (Mem.lookup sources mem) mem in
+      update_info mode spec cg ~offset:Itv.zero locations
+        (CellInfo.of_null null) mem
   | _ -> mem
 
 let model_input mode spec cg pid lvo mem =
@@ -89,53 +80,42 @@ let model_assign mode spec cg pid lvo expressions mem =
 let model_strlen mode spec cg pid lvo expressions mem =
   match (lvo, expressions) with
   | Some lv, str :: _ ->
-      let v = eval spec pid str mem in
-      let null = ArrayBlk.nullof (Val.array_of_val v) in
+      let null = null_of mem (eval spec pid str mem) in
       let v = Val.of_itv (Itv.meet Itv.nat null) in
       update mode spec cg (eval_lv spec pid lv mem) v mem
   | _ -> mem
 
-let rec model_fgets mode spec cg pid lvo expressions mem =
+let model_fgets mode spec cg pid lvo expressions mem =
   match expressions with
-  | Lval buf :: size :: _ | StartOf buf :: size :: _ ->
+  | buf :: size :: _ ->
       let size = Val.itv_of_val (eval spec pid size mem) in
-      let locations = eval_lv spec pid buf mem in
-      let array = Val.array_of_val (Mem.lookup locations mem) in
-      let elements = ArrayBlk.pow_loc_of_array array in
-      let v =
-        Val.of_array (ArrayBlk.set_null_pos array (Itv.join Itv.zero size))
-      in
-      let mem = update mode spec cg locations v mem in
-      update mode spec cg elements Val.itv_top mem
-  | CastE (_, _, buf) :: size :: rest ->
-      model_fgets mode spec cg pid lvo (buf :: size :: rest) mem
+      let buffer = eval spec pid buf mem in
+      let elements = ArrayBlk.pow_loc_of_array (Val.array_of_val buffer) in
+      let mem = update mode spec cg elements Val.itv_top mem in
+      set_null mode spec cg buffer (Itv.join Itv.zero size) mem
   | _ -> mem
 
-let rec model_sprintf mode spec cg pid lvo expressions mem =
+let model_sprintf mode spec cg pid lvo expressions mem =
   match expressions with
-  | [ Lval buf; str ] | [ StartOf buf; str ] -> (
-      let source = Val.array_of_val (eval spec pid str mem) in
-      let sources = ArrayBlk.pow_loc_of_array source in
-      let null = ArrayBlk.nullof source in
-      let locations = eval_lv spec pid buf mem in
-      let array = Val.array_of_val (Mem.lookup locations mem) in
-      let elements = ArrayBlk.pow_loc_of_array array in
-      let v = Val.of_array (ArrayBlk.set_null_pos array null) in
+  | [ buf; str ] -> (
+      let source = eval spec pid str mem in
+      let sources = ArrayBlk.pow_loc_of_array (Val.array_of_val source) in
+      let null = null_of mem source in
+      let buffer = eval spec pid buf mem in
+      let elements = ArrayBlk.pow_loc_of_array (Val.array_of_val buffer) in
       (* Reads and the return destination use the input memory; the writes
          compose over the updated one. *)
       let original = mem in
-      let mem = update mode spec cg locations v mem in
       let mem =
         update mode spec cg elements (Mem.lookup sources original) mem
       in
+      let mem = set_null mode spec cg buffer null mem in
       match lvo with
       | None -> mem
       | Some lv ->
           update mode spec cg
             (eval_lv spec pid lv original)
             (Val.of_itv null) mem)
-  | [ CastE (_, _, buf); str ] | [ buf; CastE (_, _, str) ] ->
-      model_sprintf mode spec cg pid lvo [ buf; str ] mem
   | _ -> (
       match lvo with
       | None -> mem
@@ -192,10 +172,7 @@ let model_unknown mode spec cg pid lvo f mem =
         update mode spec cg (eval_lv spec pid lv mem) v mem
       else
         let site = ext_site (SourceName.of_varinfo f) in
-        let v =
-          Val.of_array
-            (ArrayBlk.cast_array (typeOfLval lv) (ArrayBlk.extern site))
-        in
+        let v = Val.of_array (ArrayBlk.extern site) in
         let locations = alloc_loc site in
         let mem = update mode spec cg (eval_lv spec pid lv mem) v mem in
         update mode spec cg locations Val.itv_top mem
@@ -216,16 +193,17 @@ let model_memcpy mode spec cg pid lvo expressions mem =
       update mode spec cg (eval_lv spec pid lv original) destination mem
   | _ -> mem
 
+(* A fresh [struct passwd] whose [pw_name] points to an input string. *)
 let model_getpwent mode spec cg node pid lvo f mem =
   match (lvo, f.vtype) with
-  | Some lv, TFun ((TPtr ((TComp (comp, _) as elem), _) as ptr), _, _, _) ->
+  | Some lv, TFun (TPtr (TComp (comp, _), _), _, _, _) ->
       let locations = eval_lv spec pid lv mem in
       let v =
-        Val.cast ptr (typeOfLval lv)
-          (array_alloc spec node (SizeOf elem) false mem)
+        Val.cast voidPtrType (typeOfLval lv)
+          (array_alloc spec node (SizeOf (TComp (comp, []))) mem)
       in
       let field = List.find (fun f -> f.fname = "pw_name") comp.cfields in
-      let fields = ArrayBlk.append_field (Val.array_of_val v) field in
+      let fields = PowLoc.append_field (cells_of_val v) field in
       let site = ext_site "getpwent.pw_name" in
       let external_value = Val.of_array (ArrayBlk.input site) in
       let elements = alloc_loc site in
@@ -234,54 +212,36 @@ let model_getpwent mode spec cg node pid lvo f mem =
       update mode spec cg elements Val.itv_top mem
   | _ -> mem
 
-(* strcpy if not [plus], strcat if [plus] *)
-let rec model_string_copy plus mode spec cg pid expressions mem =
+(* strcpy if not [plus], strcat if [plus]: the destination's null position *)
+let model_string_copy plus mode spec cg pid expressions mem =
   match expressions with
-  | CastE (_, _, e) :: rest ->
-      model_string_copy plus mode spec cg pid (e :: rest) mem
-  | [ dst; CastE (_, _, e) ] ->
-      model_string_copy plus mode spec cg pid [ dst; e ] mem
-  | [ Lval dst; Lval src ]
-  | [ StartOf dst; StartOf src ]
-  | [ Lval dst; StartOf src ]
-  | [ StartOf dst; Lval src ] ->
-      let source =
-        Val.array_of_val (Mem.lookup (eval_lv spec pid src mem) mem)
+  | [ dst; src ] ->
+      let source = eval spec pid src mem in
+      let destination = eval spec pid dst mem in
+      let null = null_of mem source in
+      let null =
+        if plus then Itv.plus (null_of mem destination) null else null
       in
-      let destination =
-        Val.array_of_val (Mem.lookup (eval_lv spec pid dst mem) mem)
-      in
-      let null = ArrayBlk.nullof source in
-      let set_null =
-        if plus then ArrayBlk.plus_null_pos else ArrayBlk.set_null_pos
-      in
-      let v = Val.of_array (set_null destination null) in
-      update mode spec cg (eval_lv spec pid dst mem) v mem
+      set_null mode spec cg destination null mem
   | _ -> mem
 
-let rec model_strncpy mode spec cg pid expressions mem =
+let model_strncpy mode spec cg pid expressions mem =
   match expressions with
-  | CastE (_, _, e) :: rest -> model_strncpy mode spec cg pid (e :: rest) mem
-  | Lval dst :: _ :: size :: _ | StartOf dst :: _ :: size :: _ ->
-      let array =
-        Val.array_of_val (Mem.lookup (eval_lv spec pid dst mem) mem)
-      in
+  | dst :: _ :: size :: _ ->
+      let destination = eval spec pid dst mem in
       let size = Val.itv_of_val (eval spec pid size mem) in
       let null = Itv.join Itv.zero (Itv.minus size Itv.one) in
-      let v = Val.of_array (ArrayBlk.set_null_pos array null) in
-      update mode spec cg (eval_lv spec pid dst mem) v mem
+      set_null mode spec cg destination null mem
   | _ -> mem
 
-let rec model_strchr mode spec cg pid lvo expressions mem =
+let model_strchr mode spec cg pid lvo expressions mem =
   match (lvo, expressions) with
-  | Some _, CastE (_, _, e) :: rest ->
-      model_strchr mode spec cg pid lvo (e :: rest) mem
-  | Some lv, Lval str :: _ | Some lv, StartOf str :: _ ->
-      let array =
-        Val.array_of_val (Mem.lookup (eval_lv spec pid str mem) mem)
+  | Some lv, str :: _ ->
+      let pointer = eval spec pid str mem in
+      let null = null_of mem pointer in
+      let v =
+        Val.of_array (ArrayBlk.plus_offset (Val.array_of_val pointer) null)
       in
-      let null = ArrayBlk.nullof array in
-      let v = Val.of_array (ArrayBlk.plus_offset array null) in
       update mode spec cg (eval_lv spec pid lv mem) v mem
   | _ -> mem
 
@@ -398,8 +358,7 @@ let rec process_args mode spec cg node pid expressions types sources mem =
 let gen_block mode spec cg node initial mem =
   let site = Allocsite.allocsite_of_node node in
   let v =
-    Val.of_array
-      (ArrayBlk.make site (Itv.of_int 0) Itv.top ArrayBlk.Stride.one Itv.nat)
+    Val.of_array (ArrayBlk.make (Loc.of_allocsite site) (Itv.of_int 0) Itv.top)
   in
   let mem = update mode spec cg (alloc_loc site) initial mem in
   (mem, v)

@@ -50,6 +50,69 @@ module Make (A : CPO) (B : CPO) = struct
   let pp fmt (a, b) = Format.fprintf fmt "(%a, %a)" A.pp a B.pp b
 end
 
+module Make4 (A : CPO) (B : CPO) (C : CPO) (D : CPO) = struct
+  type t = A.t * B.t * C.t * D.t [@@deriving compare]
+
+  (* Representation identity (HashconsKey): componentwise. *)
+  let () =
+    let a = HashconsKey.find A.compare
+    and b = HashconsKey.find B.compare
+    and c = HashconsKey.find C.compare
+    and d = HashconsKey.find D.compare in
+    let mix = HashconsKey.mix in
+    HashconsKey.register compare
+      {
+        HashconsKey.equal =
+          (fun ((a1, b1, c1, d1) as x) ((a2, b2, c2, d2) as y) ->
+            x == y
+            || a.HashconsKey.equal a1 a2 && b.HashconsKey.equal b1 b2
+               && c.HashconsKey.equal c1 c2 && d.HashconsKey.equal d1 d2);
+        hash =
+          (fun (a1, b1, c1, d1) ->
+            mix
+              (mix
+                 (mix (a.HashconsKey.hash a1) (b.HashconsKey.hash b1))
+                 (c.HashconsKey.hash c1))
+              (d.HashconsKey.hash d1));
+      }
+
+  let fst (a, _, _, _) = a
+  let snd (_, b, _, _) = b
+  let trd (_, _, c, _) = c
+  let frth (_, _, _, d) = d
+  let make (a, b, c, d) = (a, b, c, d)
+
+  let le ((a1, b1, c1, d1) as x) ((a2, b2, c2, d2) as y) =
+    if x == y then true
+    else A.le a1 a2 && B.le b1 b2 && C.le c1 c2 && D.le d1 d2
+
+  let eq ((a1, b1, c1, d1) as x) ((a2, b2, c2, d2) as y) =
+    if x == y then true
+    else A.eq a1 a2 && B.eq b1 b2 && C.eq c1 c2 && D.eq d1 d2
+
+  let join ((a1, b1, c1, d1) as x) ((a2, b2, c2, d2) as y) =
+    if x == y then y
+    else (A.join a1 a2, B.join b1 b2, C.join c1 c2, D.join d1 d2)
+
+  let meet (a1, b1, c1, d1) (a2, b2, c2, d2) =
+    (A.meet a1 a2, B.meet b1 b2, C.meet c1 c2, D.meet d1 d2)
+
+  let widen (a1, b1, c1, d1) (a2, b2, c2, d2) =
+    (A.widen a1 a2, B.widen b1 b2, C.widen c1 c2, D.widen d1 d2)
+
+  let narrow (a1, b1, c1, d1) (a2, b2, c2, d2) =
+    (A.narrow a1 a2, B.narrow b1 b2, C.narrow c1 c2, D.narrow d1 d2)
+
+  let bot = (A.bot, B.bot, C.bot, D.bot)
+
+  let to_string (a, b, c, d) =
+    "(" ^ A.to_string a ^ ", " ^ B.to_string b ^ ", " ^ C.to_string c ^ ", "
+    ^ D.to_string d ^ ")"
+
+  let pp fmt (a, b, c, d) =
+    Format.fprintf fmt "( %a, %a, %a, %a )" A.pp a B.pp b C.pp c D.pp d
+end
+
 module Make5 (A : CPO) (B : CPO) (C : CPO) (D : CPO) (E : CPO) = struct
   type t = A.t * B.t * C.t * D.t * E.t [@@deriving compare]
 
