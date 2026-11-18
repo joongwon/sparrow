@@ -30,14 +30,21 @@ module Val : sig
   val modify_arr : ArrayBlk.t -> t -> t
   val external_value : BasicDom.Allocsite.t -> t
   val itv_top : t
-  val cast : Cil.typ -> Cil.typ -> t -> t
+  val cast : Sparrow_cil.typ -> Sparrow_cil.typ -> t -> t
+  val cast_with_layout :
+    (Sparrow_cil.compinfo -> Sparrow_cil.compinfo) ->
+    Sparrow_cil.typ -> Sparrow_cil.typ -> t -> t
 end
 
 module Mem : sig
   include InstrumentedMem.S
   val lookup : BasicDom.PowLoc.t -> t -> Val.t
+  val normalize_store_value : BasicDom.Loc.t -> Val.t -> Val.t
+  val observe_lookup : BasicDom.PowLoc.t -> t -> unit
+  val lookup_from : observed:t -> BasicDom.PowLoc.t -> t -> Val.t
   val strong_update : BasicDom.PowLoc.t -> Val.t -> t -> t
   val weak_update : BasicDom.PowLoc.t -> Val.t -> t -> t
+  val observe_update : weak:bool -> BasicDom.PowLoc.t -> unit
 end with type A.t = BasicDom.Loc.t and type B.t = Val.t and type PowA.t = BasicDom.PowLoc.t
 
 module Table : MapDom.CPO with

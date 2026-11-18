@@ -15,6 +15,7 @@ sig
   include AbsDom.CPO
   type elt
 
+
   val empty : t
   val filter : (elt -> bool) -> t -> t
   val fold : (elt -> 'a -> 'a) -> t -> 'a -> 'a
@@ -39,6 +40,9 @@ sig
 
   val union : t -> t -> t
   val union_small_big : t -> t -> t
+  (* [union] and [inter] without hash-consing, for sets that are not kept *)
+  val union_unshared : t -> t -> t
+  val inter_unshared : t -> t -> t
   val inter : t -> t -> t
   val for_all : (elt -> bool) -> t -> bool
   val exists : (elt -> bool) -> t -> bool

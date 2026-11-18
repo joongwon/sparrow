@@ -17,12 +17,32 @@ open Dug
 let total_iterations = ref 0
 let g_clock = ref 0.0
 let l_clock = ref 0.0
+(* cost metrics captured per phase *)
+let last_widen_iters = ref 0
+let last_narrow_iters = ref 0
+let widen_time = ref 0.0
+let narrow_time = ref 0.0
 
 module type S =
 sig
   module Dom : InstrumentedMem.S
+  module DUGraph : Dug.S
+    with type Loc.t = Dom.A.t
+     and type PowLoc.t = Dom.PowA.t
+  module Worklist : Worklist.S with type DUGraph.t = DUGraph.t
   module Table : MapDom.CPO with type t = MapDom.MakeCPO(BasicDom.Node)(Dom).t and type A.t = BasicDom.Node.t and type B.t = Dom.t
   module Spec : Spec.S with type Dom.t = Dom.t and type Dom.A.t = Dom.A.t and type Dom.PowA.t = Dom.PowA.t
+  module Rows : Rows.S with module Dom = Dom and module DUGraph = DUGraph and module Worklist = Worklist
+  type analysis_state = Worklist.t * Global.t
+  type step = BasicDom.Node.t -> Dom.t * Global.t -> Dom.t * Global.t
+  type visit = DUGraph.t -> DUGraph.node -> analysis_state -> analysis_state
+  val frame_locals_of :
+    (Global.t -> defs_at:(BasicDom.Node.t -> Dom.PowA.t) -> proc_local:(InterCfg.pid -> Dom.PowA.t) ->
+     Dom.PowA.t) ref
+  val variable_of : (Dom.A.t -> (InterCfg.pid * string) option) ref
+  val analyze_node : Rows.t -> step -> visit
+  val widening : visit -> DUGraph.t -> DUGraph.node BatSet.t -> analysis_state -> analysis_state
+  val perform_with : (Rows.t -> visit) -> Spec.t -> Global.t -> Global.t * Table.t * Table.t
   val perform : Spec.t -> Global.t -> Global.t * Table.t * Table.t
 end
 
@@ -37,21 +57,24 @@ struct
   module Table = MapDom.MakeCPO (Node) (Sem.Dom)
   module Spec = Sem.Spec
   module PowLoc = Sem.Dom.PowA
+  module Rows = Rows.Make (Dom) (DUGraph) (Worklist)
+  type analysis_state = Worklist.t * Global.t
+  type step = Node.t -> Dom.t * Global.t -> Dom.t * Global.t
+  type visit = DUGraph.t -> DUGraph.node -> analysis_state -> analysis_state
 
-  let needwidening : DUGraph.node -> Worklist.t -> bool
-  =fun idx wl -> Worklist.is_loopheader idx wl
+  (* The frame locals of the program (FrameLocal), from the global state and
+     the access; the interval instance sets it (ItvAnalysis), others have
+     none. *)
+  let frame_locals_of :
+    (Global.t -> defs_at:(BasicDom.Node.t -> PowLoc.t) -> proc_local:(InterCfg.pid -> PowLoc.t) -> PowLoc.t) ref =
+    ref (fun _ ~defs_at:_ ~proc_local:_ -> PowLoc.empty)
 
-  let def_locs_cache = Hashtbl.create 251
-  let get_def_locs : Node.t -> DUGraph.t -> Access.PowLoc.t
-  = fun idx dug ->
-    try Hashtbl.find def_locs_cache idx with Not_found ->
-    let def_locs =
-      let union_locs succ = PowLoc.union (DUGraph.get_abslocs idx succ dug) in
-      DUGraph.fold_succ union_locs dug idx PowLoc.empty
-    in
-    Hashtbl.add def_locs_cache idx def_locs; def_locs
+  (* The procedure and name of the variable a location is rooted at (SsaDug
+     routing); the interval instance sets it (ItvAnalysis, FrameLocal.variable),
+     others know no variables. *)
+  let variable_of : (Dom.A.t -> (InterCfg.pid * string) option) ref = ref (fun _ -> None)
 
-  let print_iteration () =
+  let print_iteration idx =
     total_iterations := !total_iterations + 1;
     if !total_iterations = 1 then (g_clock := Sys.time(); l_clock := Sys.time ())
     else if !total_iterations mod 10000 = 0
@@ -66,76 +89,22 @@ struct
       l_clock := Sys.time ();
     end
 
-  let propagate dug idx (works,inputof,outputof) (unstables,new_output,global)=
-    let (works, inputof) =
-      let update_succ succ (works, inputof) =
-        let old_input = Table.find succ inputof in
-        let locs_on_edge = DUGraph.get_abslocs idx succ dug in
-        let is_on_edge (x, _) = DUGraph.mem_duset x locs_on_edge in
-        let to_join = List.filter is_on_edge unstables in
-        if to_join = [] then (works, inputof)
-        else
-          let new_input = Dom.join_pairs to_join old_input in
-          (Worklist.push idx succ works, Table.add succ new_input inputof)
-      in
-      DUGraph.fold_succ update_succ dug idx (works, inputof)
-    in
-    (works, global, inputof, Table.add idx new_output outputof)
-
-  let get_unstable dug idx works old_output (new_output, global) =
-    let def_locs = Profiler.event "SparseAnalysis.widening_get_def_locs" (get_def_locs idx) dug in
-    let is_unstb v1 v2 = not (Dom.B.le v2 v1) in
-    let u = Profiler.event "SparseAnalysis.widening_unstable" (Dom.unstables old_output new_output is_unstb) def_locs in
-    if u = [] then None
-    else
-      let op = if needwidening idx works then Dom.B.widen else (fun _ y -> y) in
-      let _ = Profiler.start_event "SparseAnalysis.widening_new_output" in
-      let u = List.map (fun (k, v1, v2) -> (k, op v1 v2)) u in
-      let new_output = list_fold (fun (k, v) -> Dom.add k v) u old_output in
-      let _ = Profiler.finish_event "SparseAnalysis.widening_new_output" in
-      (* update unstable locations's values by widened values *)
-      let u = List.map (fun (k, _) -> (k, Dom.find k new_output)) u in
-      Some (u, new_output, global)
-
-  let prdbg_input : Node.t -> (Dom.t * Global.t) -> (Dom.t * Global.t)
-  = fun node (mem, global) ->
-    prerr_endline (Node.to_string node);
-    prerr_endline (IntraCfg.Cmd.to_string (InterCfg.cmdof global.icfg node));
-    prerr_endline "== Input ==";
-    prerr_endline (Dom.to_string mem);
-    (mem, global)
-
-  let prdbg_output : Dom.t -> (Dom.t * Global.t) -> (Dom.t * Global.t)
-  = fun old_output (new_output, global) ->
-    prerr_endline "== Old Output ==";
-    prerr_endline (Dom.to_string old_output);
-    prerr_endline "== New Output ==";
-    prerr_endline (Dom.to_string new_output);
-    (new_output, global)
-
-  (* fixpoint iterator specialized to the widening phase *)
-  let analyze_node : Spec.t -> DUGraph.t -> DUGraph.node
-    -> (Worklist.t * Global.t * Table.t * Table.t)
-    -> (Worklist.t * Global.t * Table.t * Table.t)
-  = fun spec dug idx (works, global, inputof, outputof) ->
-    print_iteration ();
-    let old_output = Table.find idx outputof in
-    (Table.find idx inputof, global)
-    |> opt !Options.debug (prdbg_input idx)
-    |> Profiler.event "SparseAnalysis.run" (Sem.run Strong spec idx)
-    |> opt !Options.debug (prdbg_output old_output)
-    |> Profiler.event "SparseAnalysis.get_unstable" (get_unstable dug idx works old_output)
-    &> Profiler.event "SparseAnalysis.propagating" (propagate dug idx (works,inputof,outputof))
-    |> (function None -> (works, global, inputof, outputof) | Some x -> x)
-
+  (* The visit of a node in the widening phase on the rows *)
+  let analyze_node : Rows.t -> step -> visit
+  = fun rows step _ idx (works, global) ->
+    print_iteration idx;
+    let i = Rows.index rows idx in
+    let works = ref works in
+    let global = Rows.update rows works i (step idx) global in
+    (!works, global)
 
   (* fixpoint iterator that can be used in both widening and narrowing phases *)
   let analyze_node_with_otable (widen,order) : Spec.t -> DUGraph.t ->
     DUGraph.node
-    -> (Worklist.t * Global.t * Table.t * Table.t)
-    -> (Worklist.t * Global.t * Table.t * Table.t)
-  =fun spec dug idx (works, global, inputof, outputof) ->
-    print_iteration ();
+    -> (Worklist.t * (Global.t * Table.t * Table.t))
+    -> (Worklist.t * (Global.t * Table.t * Table.t))
+  =fun spec dug idx (works, (global, inputof, outputof)) ->
+    print_iteration idx;
     let pred = DUGraph.pred idx dug in
     let input = List.fold_left (fun m p ->
           let pmem = Table.find p outputof in
@@ -149,39 +118,42 @@ struct
     let old_output = Table.find idx outputof in
     let (new_output, global) = Sem.run Strong spec idx (input, global) in
     let widened = widen old_output new_output in
-    if order widened old_output then (works, global, inputof, outputof)
+    if order widened old_output then (works, (global, inputof, outputof))
     else
       let works = Worklist.push_set idx (BatSet.of_list (DUGraph.succ idx dug)) works in
-      (works, global, inputof, Table.add idx new_output outputof)
+      (works, (global, inputof, Table.add idx new_output outputof))
 
-  let rec iterate f : DUGraph.t -> (Worklist.t * Global.t * Table.t * Table.t)
-     -> (Worklist.t * Global.t * Table.t * Table.t)
-  =fun dug (works, global, inputof, outputof) ->
+  let rec iterate f dug (works, state) =
     match Worklist.pick works with
-    | None -> (works, global, inputof, outputof)
-    | Some (idx, rest) ->
-      (rest, global, inputof, outputof)
-      |> f dug idx
-      |> iterate f dug
+    | None -> (works, state)
+    | Some (idx, rest) -> iterate f dug (f dug idx (rest, state))
 
-  let widening : Spec.t -> DUGraph.t -> (Worklist.t * Global.t * Table.t * Table.t)
-      -> (Worklist.t * Global.t * Table.t * Table.t)
-  =fun spec dug (worklist, global, inputof, outputof) ->
+  (* the widening phase from the given nodes, each visit by [visit] *)
+  let widening : visit -> DUGraph.t -> DUGraph.node BatSet.t -> analysis_state -> analysis_state
+  =fun visit dug nodes (worklist, global) ->
     total_iterations := 0;
+    let t0 = Sys.time () in
     worklist
-    |> Worklist.push_set InterCfg.start_node (DUGraph.nodesof dug)
-    |> (fun init_worklist -> iterate (analyze_node spec) dug (init_worklist, global, inputof, outputof))
-    |> (fun x -> my_prerr_endline ("\n#iteration in widening : " ^ string_of_int !total_iterations); x)
+    |> Worklist.push_init nodes
+    |> (fun init_worklist -> iterate visit dug (init_worklist, global))
+    |> (fun x ->
+        widen_time := Sys.time () -. t0;
+        last_widen_iters := !total_iterations;
+        my_prerr_endline ("\n#iteration in widening : " ^ string_of_int !total_iterations); x)
 
-  let narrowing ?(initnodes=BatSet.empty) : Spec.t -> DUGraph.t -> (Worklist.t * Global.t * Table.t * Table.t)
-      -> (Worklist.t * Global.t * Table.t * Table.t)
-  =fun spec dug (worklist, global, inputof, outputof) ->
+  let narrowing ?(initnodes=BatSet.empty) : Spec.t -> DUGraph.t -> (Worklist.t * (Global.t * Table.t * Table.t))
+      -> (Worklist.t * (Global.t * Table.t * Table.t))
+  =fun spec dug (worklist, state) ->
     total_iterations := 0;
+    let t0 = Sys.time () in
     worklist
-    |> Worklist.push_set InterCfg.start_node (if (BatSet.is_empty initnodes) then DUGraph.nodesof dug else initnodes)
+    |> Worklist.push_init (if (BatSet.is_empty initnodes) then DUGraph.nodesof dug else initnodes)
     |> (fun init_worklist -> iterate (analyze_node_with_otable (Dom.narrow, fun x y -> Dom.le y x) spec)
-        dug (init_worklist, global, inputof, outputof))
-    |> (fun x -> my_prerr_endline ("#iteration in narrowing : " ^ string_of_int !total_iterations); x)
+        dug (init_worklist, state))
+    |> (fun x ->
+        narrow_time := Sys.time () -. t0;
+        last_narrow_iters := !total_iterations;
+        my_prerr_endline ("#iteration in narrowing : " ^ string_of_int !total_iterations); x)
 
   let print_dug (access,global,dug) =
     if !Options.dug then
@@ -199,6 +171,7 @@ struct
     begin
       prerr_memory_usage ();
       prerr_endline ("#Nodes in def-use graph : " ^ i2s (DUGraph.nb_node dug));
+      prerr_endline ("#Edges in def-use graph : " ^ i2s (DUGraph.nb_edge dug));
       prerr_endline ("#Locs on def-use graph : " ^ i2s (DUGraph.nb_loc dug));
     end
 
@@ -234,30 +207,45 @@ struct
     Table.add InterCfg.start_node (Sem.initial spec.Spec.locset) Table.empty
     |> cond (!Options.pfs < 100) (bind_fi_locs global spec.Spec.premem dug access) id
 
-  let finalize spec global dug access (worklist, global, inputof, outputof) =
+  let finalize spec global dug access (worklist, (global, inputof, outputof)) =
     let inputof =
       if !Options.pfs < 100 then bind_unanalyzed_node global spec.Spec.premem dug access inputof
       else inputof
     in
-    (worklist, global, inputof, outputof)
+    (worklist, (global, inputof, outputof))
 
   let print_spec : Spec.t -> unit
   = fun spec ->
     my_prerr_endline ("#total abstract locations  = " ^ string_of_int (PowLoc.cardinal spec.Spec.locset));
     my_prerr_endline ("#flow-sensitive abstract locations  = " ^ string_of_int (PowLoc.cardinal spec.Spec.locset_fs))
 
-  let perform : Spec.t -> Global.t -> Global.t * Table.t * Table.t
-  =fun spec global ->
+  let perform_with visit spec global =
     print_spec spec;
-    let access = StepManager.stepf false "Access Analysis" (AccessAnalysis.perform global spec.Spec.locset (Sem.run Strong spec)) spec.Spec.premem in
-    let dug = StepManager.stepf false "Def-use graph construction" SsaDug.make (global, access, spec.Spec.locset_fs) in
+    let access = StepManager.stepf false "Access Analysis" (fun premem -> FrameLocal.without (fun () ->
+        AccessAnalysis.perform global spec.Spec.locset (Sem.run Strong spec) premem)) spec.Spec.premem in
+    let frame_locals = !frame_locals_of global
+      ~defs_at:(fun node -> Access.Info.defof (Access.find_node node access))
+      ~proc_local:(fun pid -> Access.find_proc_local pid access) in
+    let dug = StepManager.stepf false "Def-use graph construction" (SsaDug.make ~frame_locals ~variable:!variable_of)
+      (global, access, spec.Spec.locset_fs) in
     print_dug (access,global,dug);
     let worklist = StepManager.stepf false "Workorder computation" Worklist.init dug in
-    (worklist, global, initialize spec global dug access, Table.empty)
-    |> StepManager.stepf false "Fixpoint iteration with widening" (widening spec dug)
+    let nodes = DUGraph.fold_node (fun n ns -> n :: ns) dug [] |> List.sort Node.compare |> Array.of_list in
+    let rows = Rows.make nodes dug ~defined:(fun node -> Access.Info.defof (Access.find_node node access)) in
+    let init_inputof = initialize spec global dug access in
+    Array.iteri (fun i n -> (Rows.inputs rows).(i) <- Table.find n init_inputof) nodes;
+    let (worklist, global) =
+      StepManager.stepf false "Fixpoint iteration with widening"
+        (widening (visit rows) dug (DUGraph.nodesof dug)) (worklist, global) in
+    let table memories init = list_fold (fun (n, m) -> Table.add n m) (BatArray.combine nodes memories |> Array.to_list) init in
+    (worklist, (global, table (Rows.inputs rows) init_inputof, table (Rows.outputs rows) Table.empty))
     |> finalize spec global dug access
     |> StepManager.stepf_opt !Options.narrow false "Fixpoint iteration with narrowing" (narrowing spec dug)
-    |> (fun (_,global,inputof,outputof) -> (global, inputof, outputof))
+    |> (fun (_, (global, inputof, outputof)) -> (global, inputof, outputof))
+
+  let perform : Spec.t -> Global.t -> Global.t * Table.t * Table.t
+  =fun spec global ->
+    perform_with (fun rows -> analyze_node rows (Sem.run Strong spec)) spec global
 end
 
 module Make (Sem:AbsSem.S) = MakeWithAccess (AccessSem.Make (Sem))

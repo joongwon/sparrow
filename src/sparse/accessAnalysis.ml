@@ -23,6 +23,9 @@ sig
   module PowLoc : PowDom.CPO
   module Access : Access.S with type Loc.t = Loc.t and type PowLoc.t = PowLoc.t
 
+  val node_access : Global.t -> PowLoc.t -> (BasicDom.Node.t -> Dom.t * Global.t -> Dom.t * Global.t) -> Dom.t
+    -> BasicDom.Node.t list -> (BasicDom.Node.t * Access.info) list
+  val summarize : Global.t -> (BasicDom.Node.t * Access.info) list -> Access.t
   val perform : Global.t -> Access.PowLoc.t -> (BasicDom.Node.t -> Dom.t * Global.t -> Dom.t * Global.t) -> Dom.t -> Access.t
 end
 
@@ -33,13 +36,15 @@ struct
   module PowLoc = Sem.Dom.PowA
   module Dom = Sem.Dom
   module LocMap = Access.LocMap
-  let init_access : Global.t -> PowLoc.t -> Dom.t -> (Node.t -> Dom.t * Global.t -> Dom.t * Global.t) -> Access.t
-  =fun global locset mem f ->
-    let nodes = InterCfg.nodesof global.icfg in
+  let node_access : Global.t -> PowLoc.t -> (Node.t -> Dom.t * Global.t -> Dom.t * Global.t) -> Dom.t
+    -> Node.t list -> (Node.t * Access.info) list
+  =fun global locset sem mem nodes ->
+    List.map (fun node -> (node, Sem.accessof ~locset global node sem mem)) nodes
+
+  let init_access : (Node.t * Access.info) list -> Access.t
+  =fun node_access ->
     let initial =
-        list_fold (fun node ->
-          Access.add_node node (Sem.accessof ~locset global node f mem)
-       )  nodes Access.empty
+      list_fold (fun (node, info) -> Access.add_node node info) node_access Access.empty
     in
     let abslocs = Access.fold (fun _ access acc ->
         PowLoc.union_small_big (Access.Info.useof access) acc
@@ -118,10 +123,10 @@ struct
       ) (Access.Info.useof info) access
     ) access access
 
-  let perform : Global.t -> Access.PowLoc.t -> (Node.t -> Dom.t * Global.t -> Dom.t * Global.t) -> Dom.t -> Access.t
-  =fun global locset sem mem ->
+  let summarize : Global.t -> (Node.t * Access.info) list -> Access.t
+  =fun global node_access ->
     let pids = InterCfg.pidsof global.icfg in
-    init_access global locset mem sem
+    init_access node_access
     |> init_access_proc
     |> init_access_proc_reach pids global.callgraph
     |> init_access_proc_local
@@ -129,4 +134,9 @@ struct
     |> init_access_program_local
     |> init_defs_of
     |> init_uses_of
+
+  let perform : Global.t -> Access.PowLoc.t -> (Node.t -> Dom.t * Global.t -> Dom.t * Global.t) -> Dom.t -> Access.t
+  =fun global locset sem mem ->
+    node_access global locset sem mem (InterCfg.nodesof global.icfg)
+    |> summarize global
 end

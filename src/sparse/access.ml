@@ -147,11 +147,12 @@ struct
     let defof : t -> PowLoc.t
     = fun l -> l.def
 
+    (* Summaries grow one node or callee at a time; the steps are not hash-consed *)
     let union : t -> t -> t
     = fun l1 l2 ->
       {
-        use = PowLoc.union l1.use l2.use;
-        def = PowLoc.union l1.def l2.def
+        use = PowLoc.union_unshared l1.use l2.use;
+        def = PowLoc.union_unshared l1.def l2.def
       }
 
     let diff : t -> t -> PowLoc.t

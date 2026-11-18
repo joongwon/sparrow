@@ -17,9 +17,32 @@ sig
   module B : AbsDom.CPO
   module PowA : PowDom.CPO with type elt = A.t
 
+  (* Reset this instance's value hash-cons table (b_table).  The table pins one
+     copy of every distinct B.t ever hashconsed and is never cleared on its own;
+     a single whole-program analysis stays bounded, but a client that runs many
+     independent solves in one process accumulates every solve's values
+     until memory runs out.  Clearing
+     between independent solves is sound -- hash-consing is only an optimization,
+     all existing values remain valid -- it only drops cross-solve physical
+     sharing.  No-op for single-solve clients (they never call it). *)
+  val clear_b_table : unit -> unit
+
+  val replace_binding : A.t -> B.t -> t -> t
+  val widen_with : (A.t -> B.t option) -> t -> t -> t
+
   val empty : t
   val is_empty : t -> bool
   val find : A.t -> t -> B.t
+  (** Return the comparison-equivalent key actually resident in the map,
+      together with its value.  Unlike [find], this preserves key
+      representatives when a client builds a restricted map from keys
+      decoded independently of the source map. *)
+  val find_binding : A.t -> t -> (A.t * B.t) option
+  (** Reinsert an already-resident binding without key or value
+      normalization.  This is the key-driven counterpart of [filter]: it is
+      intended only for rebuilding a restriction from [find_binding]
+      results. *)
+  val add_binding : A.t -> B.t -> t -> t
   val add : A.t -> B.t -> t -> t
   val weak_add : A.t -> B.t -> t -> t
   val remove : A.t -> t -> t

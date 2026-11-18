@@ -11,23 +11,23 @@
 open Vocab
 open BasicDom
 open ItvDom
-open Cil
+open Sparrow_cil
 open IntraCfg
 open Cmd
 open AlarmExp
 
 type target = BO | ND | DZ
 type status = Proven | UnProven | BotAlarm
-type part_unit = Cil.location
+type part_unit = Sparrow_cil.location
 
 let status_to_string = function Proven -> "Proven" | UnProven -> "UnProven" | _ -> "BotAlarm"
 
 type query = {
   node : InterCfg.node;
   exp : AlarmExp.t;
-  loc : Cil.location;
+  loc : Sparrow_cil.location;
   allocsite : Allocsite.t option;
-  src : (InterCfg.node * Cil.location) option;
+  src : (InterCfg.node * Sparrow_cil.location) option;
   status : status;
   desc : string
 }
@@ -54,20 +54,20 @@ let partition : query list -> (part_unit, query list) BatMap.t
 let sort_queries : query list -> query list =
 fun queries ->
   List.sort (fun a b ->
-    if Pervasives.compare a.loc.file b.loc.file = 0 then
+    if Stdlib.compare a.loc.file b.loc.file = 0 then
     begin
-      if Pervasives.compare a.loc.line b.loc.line = 0 then
-        Pervasives.compare a.exp b.exp
-      else Pervasives.compare a.loc.line b.loc.line
+      if Stdlib.compare a.loc.line b.loc.line = 0 then
+        Stdlib.compare a.exp b.exp
+      else Stdlib.compare a.loc.line b.loc.line
     end
-    else Pervasives.compare a.loc.file b.loc.file) queries
+    else Stdlib.compare a.loc.file b.loc.file) queries
 
 let sort_partition : (part_unit * query list) list -> (part_unit * query list) list =
 fun queries ->
   List.sort (fun (a,_) (b,_) ->
-    if Pervasives.compare a.file b.file = 0 then
-      Pervasives.compare a.line b.line
-    else Pervasives.compare a.file b.file) queries
+    if Stdlib.compare a.file b.file = 0 then
+      Stdlib.compare a.line b.line
+    else Stdlib.compare a.file b.file) queries
 
 let get_status : query list -> status
 =fun queries ->

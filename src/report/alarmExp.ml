@@ -8,20 +8,22 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-open Cil
+open Sparrow_cil
 open IntraCfg
 open Cmd
 
-type t =
-  | ArrayExp of lval * exp * location
-  | DerefExp of exp * location
-  | DivExp of exp * exp * location
-  | Strcpy of exp * exp * location
-  | Strcat of exp * exp * location
-  | Strncpy of exp * exp * exp * location
-  | Memcpy of exp * exp * exp * location
-  | Memmove of exp * exp * exp * location
-  | AllocSize of exp * location
+type ('exp, 'lval) expression =
+  | ArrayExp of 'lval * 'exp * location
+  | DerefExp of 'exp * location
+  | DivExp of 'exp * 'exp * location
+  | Strcpy of 'exp * 'exp * location
+  | Strcat of 'exp * 'exp * location
+  | Strncpy of 'exp * 'exp * 'exp * location
+  | Memcpy of 'exp * 'exp * 'exp * location
+  | Memmove of 'exp * 'exp * 'exp * location
+  | AllocSize of 'exp * location
+
+type t = (Sparrow_cil.exp, Sparrow_cil.lval) expression
 
 let to_string t =
   match t with
@@ -46,21 +48,21 @@ let location_of = function
   | Strcat (_, _, l)
   | AllocSize (_, l) -> l
 
-(* NOTE: you may use Cil.addOffset or Cil.addOffsetLval instead of
+(* NOTE: you may use Sparrow_cil.addOffset or Sparrow_cil.addOffsetLval instead of
    add_offset, append_field, and append_index. *)
-let rec add_offset : Cil.offset -> Cil.offset -> Cil.offset
+let rec add_offset : Sparrow_cil.offset -> Sparrow_cil.offset -> Sparrow_cil.offset
 =fun o orig_offset ->
   match orig_offset with
   | NoOffset -> o
   | Field (f, o1) -> Field (f, add_offset o o1)
   | Index (e, o1) -> Index (e, add_offset o o1)
 
-let append_field : Cil.lval -> Cil.fieldinfo -> Cil.lval
+let append_field : Sparrow_cil.lval -> Sparrow_cil.fieldinfo -> Sparrow_cil.lval
 =fun lv f -> (fst lv, add_offset (Field (f, NoOffset)) (snd lv))
-let append_index : Cil.lval -> Cil.exp -> Cil.lval
+let append_index : Sparrow_cil.lval -> Sparrow_cil.exp -> Sparrow_cil.lval
 =fun lv e -> (fst lv, add_offset (Index (e, NoOffset)) (snd lv))
 
-let rec c_offset : Cil.lval -> Cil.offset -> Cil.location -> t list
+let rec c_offset : Sparrow_cil.lval -> Sparrow_cil.offset -> Sparrow_cil.location -> t list
 =fun lv offset loc ->
   match offset with
   | NoOffset -> []
@@ -69,7 +71,7 @@ let rec c_offset : Cil.lval -> Cil.offset -> Cil.location -> t list
     (ArrayExp (lv, e, loc)) :: (c_exp e loc)
     @ (c_offset (append_index lv e) o loc)
 
-and c_lv : Cil.lval -> Cil.location -> t list
+and c_lv : Sparrow_cil.lval -> Sparrow_cil.location -> t list
 =fun lv loc ->
   match lv with
   | Var v, offset   -> c_offset (Var v, NoOffset) offset loc
@@ -77,7 +79,7 @@ and c_lv : Cil.lval -> Cil.location -> t list
     (DerefExp (exp, loc)) :: (c_exp exp loc)
     @ (c_offset (Mem exp, NoOffset) offset loc)
 
-and c_exp : Cil.exp -> Cil.location -> t list
+and c_exp : Sparrow_cil.exp -> Sparrow_cil.location -> t list
 =fun e loc ->
   match e with
   | Lval lv -> c_lv lv loc
@@ -89,7 +91,7 @@ and c_exp : Cil.exp -> Cil.location -> t list
         Div | Mod -> DivExp (e1, e2, loc) :: (c_exp e1 loc) @ (c_exp e2 loc)
       | _ -> (c_exp e1 loc) @ (c_exp e2 loc)
     end
-  | CastE (_,e) -> c_exp e loc
+  | CastE (_,_,e) -> c_exp e loc
   | AddrOf lv -> c_lv lv loc
   | StartOf lv -> c_lv lv loc
   | _ -> []
@@ -99,7 +101,7 @@ and c_exps exps loc = List.fold_left (fun q e -> q @ (c_exp e loc)) [] exps
 let query_lib = ["strcpy"; "memcpy"; "memmove"; "strncpy"; "strcat"]
 
 let c_lib f es loc =
-  match f.vname with
+  match SourceName.of_varinfo f with
   | "strcpy" -> (Strcpy (List.nth es 0, List.nth es 1, loc)) :: (c_exps es loc)
   | "memcpy" -> (Memcpy (List.nth es 0, List.nth es 1, List.nth es 2, loc))::(c_exps es loc)
   | "memmove" -> (Memmove (List.nth es 0, List.nth es 1, List.nth es 2, loc))::(c_exps es loc)
@@ -108,7 +110,7 @@ let c_lib f es loc =
   | _ -> []
 
 let c_lib_taint f es loc =
-  match f.vname with
+  match SourceName.of_varinfo f with
   | "mmap"
   | "realloc" -> [AllocSize (List.nth es 1, loc)]
   | "calloc" -> [AllocSize (List.nth es 0, loc)]
@@ -124,7 +126,7 @@ let rec collect : IntraCfg.cmd -> t list
   | Cmd.Csalloc (lv,_,loc) -> c_lv lv loc
   | Cmd.Cassume (e,loc) -> c_exp e loc
   | Cmd.Creturn (Some e, loc) -> c_exp e loc
-  | Cmd.Ccall (_, Lval (Var f, NoOffset), es, loc) when List.mem f.vname query_lib -> c_lib f es loc
+  | Cmd.Ccall (_, Lval (Var f, NoOffset), es, loc) when List.mem (SourceName.of_varinfo f) query_lib -> c_lib f es loc
   | Cmd.Ccall (_, Lval (Var f, NoOffset), es, loc) when !Options.taint ->
     c_lib_taint f es loc
   | Cmd.Ccall (None,e,es,loc) -> (c_exp e loc) @ (c_exps es loc)

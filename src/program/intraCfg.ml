@@ -11,7 +11,7 @@
 (** CFG for a Function. *)
 
 open Vocab
-open Cil
+open Sparrow_cil
 open CilHelper
 open Printf
 
@@ -29,13 +29,23 @@ module Node = struct
   let exit = EXIT
 
   let nid = ref 0
+  let initial_id = !nid
 
-  let fromCilStmt : Cil.stmt -> t
+  let get_initial_id () = initial_id
+
+  let get_next_id () = !nid
+
+  let set_next_id value = nid := value
+
+  let fromCilStmt : Sparrow_cil.stmt -> t
   =fun s ->
     if !nid < s.sid then nid := s.sid;
     Node s.sid
 
   let make () = nid := !nid + 1; Node !nid
+
+  (* rebuild a node from its id (no counter effect) *)
+  let of_id i = Node i
 
   let id n =
     match n with
@@ -54,6 +64,168 @@ module Node = struct
 end
 
 module NodeSet = BatSet.Make(Node)
+
+(* Where the lowering made a node: the construction it belongs to and the
+   rules that derived it.  Recorded only inside [Origin.record]. *)
+module Origin = struct
+  type part = Storage | Initializer
+  type branch = At of int | Then | Else | Body
+  type root =
+    | Entry
+    | Exit
+    | Statement of Node.t * branch list
+    | Function
+    | Local of int
+    | Global of int * part
+    | Main
+  type rule =
+    | Assume of bool
+    | Return_site
+    | Noreturn_return
+    | Implicit_return
+    | Instruction
+    | Array
+    | Struct
+    | Init_loop of int
+    | Nested_array of int
+    | Field_cast
+    | Local_cast
+    | Dynamic_alloc of int
+    | String_alloc
+    | String_command of int
+    | Global_storage of int
+    | Global_initializer
+    | Function_value
+    | Argument of int
+    | Main_call
+    | Replacement
+    | Array_init
+  type step = { rule : rule; rank : int; node : Node.t }
+  type t = { root : root; steps : step list }
+  type field = { lvalue : lval; first : int; limit : int }
+  type temporary = { variable : varinfo; string : bool; context : t option; stamp : int }
+
+  type recording = {
+    origins : (string * Node.t, t) Hashtbl.t;
+    fields : (string, fundec * field) Hashtbl.t;
+    temporaries : (string, fundec * temporary) Hashtbl.t;
+    mutable pid : string;
+    mutable context : t option;
+    mutable ranks : (rule, int) Hashtbl.t;
+  }
+  let active = ref None
+
+  let record f =
+    let r = { origins = Hashtbl.create 4096; fields = Hashtbl.create 16;
+              temporaries = Hashtbl.create 64; pid = ""; context = None;
+              ranks = Hashtbl.create 7 } in
+    let previous = !active in
+    active := Some r;
+    Fun.protect ~finally:(fun () -> active := previous) (fun () -> f r)
+
+  let find r pid n = Hashtbl.find_opt r.origins (pid, n)
+  let of_fundec table r fd =
+    List.rev (List.filter_map (fun (f, x) -> if f == fd then Some x else None)
+      (Hashtbl.find_all table fd.svar.vname))
+  let fields r = of_fundec r.fields r
+  let temporaries r = of_fundec r.temporaries r
+
+  let seed pid n root = match !active with
+    | Some r -> Hashtbl.replace r.origins (pid, n) { root; steps = [] }
+    | None -> ()
+
+  let enter pid context f = match !active with
+    | None -> f ()
+    | Some r ->
+      let pid' = r.pid and context' = r.context and ranks = r.ranks in
+      r.pid <- pid; r.context <- context; r.ranks <- Hashtbl.create 7;
+      Fun.protect ~finally:(fun () -> r.pid <- pid'; r.context <- context'; r.ranks <- ranks) f
+  let within pid root f = enter pid (Some { root; steps = [] }) f
+  let from pid n f = match !active with
+    | None -> f ()
+    | Some r -> enter pid (find r pid n) f
+
+  let derive rule =
+    let node = Node.make () in
+    (match !active with
+     | Some ({ context = Some o; _ } as r) ->
+       let rank = Option.value ~default:0 (Hashtbl.find_opt r.ranks rule) in
+       Hashtbl.replace r.ranks rule (rank + 1);
+       Hashtbl.replace r.origins (r.pid, node) { o with steps = o.steps @ [ { rule; rank; node } ] }
+     | _ -> ());
+    node
+
+  let temporary ~string fd typ =
+    let variable = makeTempVar fd typ in
+    (match !active with
+     | Some r ->
+       Hashtbl.add r.temporaries fd.svar.vname
+         (fd, { variable; string; context = r.context; stamp = Node.get_next_id () })
+     | None -> ());
+    variable
+
+  let field fd lvalue first = match !active with
+    | Some r -> Hashtbl.add r.fields fd.svar.vname (fd, { lvalue; first; limit = Node.get_next_id () })
+    | None -> ()
+
+  let root_node = function
+    | Statement (n, _) -> Some n
+    | Entry -> Some Node.ENTRY
+    | Exit -> Some Node.EXIT
+    | Function | Local _ | Global _ | Main -> None
+
+  (* The node an origin names *)
+  let node o = match List.rev o.steps with
+    | s :: _ -> s.node
+    | [] -> Option.get (root_node o.root)
+
+  let parent o = { o with steps = List.rev (List.tl (List.rev o.steps)) }
+
+  let string_rule = function String_alloc | String_command _ -> true | _ -> false
+  let return_rule = function Return_site | Noreturn_return -> true | _ -> false
+
+  (* The order in which [init] and then [optimize] make the nodes of a
+     procedure: the pass, then the place in the pass's traversal (in node
+     order, the calls of [insert_return_nodes] in decreasing order). *)
+  let rec creation o =
+    let id = Node.id (node o) in
+    match List.rev o.steps, o.root with
+    | s :: _, _ when return_rule s.rule -> 10 :: List.map (~-) (creation (parent o))
+    | _, Local k -> [ 2; k; id ]
+    | _, root ->
+      let rec scan above fallback = function
+        | s :: rest when string_rule s.rule ->
+          let above = Node.id (Option.get above) in
+          if List.exists (fun s -> s.rule = Array_init) rest then [ 12; 8; above; id ] else [ 8; above; id ]
+        | { rule = Array_init; _ } :: _ -> [ 12; 0; Node.id (Option.get above) ]
+        | { rule = Implicit_return; _ } :: _ -> [ 11; id ]
+        | ({ rule = Dynamic_alloc _ | Array | Struct | Init_loop _ | Nested_array _ | Field_cast; _ } as s)
+          :: rest -> scan (Some s.node) [ 7; id ] rest
+        | ({ rule = Instruction; _ } as s) :: rest -> scan (Some s.node) [ 5; id ] rest
+        | ({ rule = Assume _; _ } as s) :: rest -> scan (Some s.node) [ 4; id ] rest
+        | s :: rest -> scan (Some s.node) fallback rest
+        | [] -> fallback
+      in
+      scan (root_node root) (if root = Function then [ 1; id ] else [ 0; id ]) o.steps
+
+  (* The same order in the global procedure, whose chain constructions are
+     ranked by [global_constructions] (the call of main after them all) *)
+  let global_creation ~rank o =
+    let id = Node.id (node o) in
+    let has p = List.exists (fun s -> p s.rule) o.steps in
+    let strings = if has string_rule then 1 else 0 in
+    if has (( = ) Array_init) then [ 3; strings; rank; id ]
+    else if has return_rule then [ 2; - rank; id ]
+    else [ strings; rank; id ]
+
+  (* The order in which the lowering declares temporaries: the storage
+     temporaries as it goes, then those of [transform_string_allocs] by the
+     node whose strings they hold *)
+  let temporary_order t =
+    if t.string then (1, Node.id (node (Option.get t.context))) else (0, t.stamp)
+  let temporary_creation t = let kind, at = temporary_order t in [ kind; at ]
+  let global_temporary_creation ~rank t = let kind, at = temporary_order t in [ kind; rank; at ]
+end
 
 module Cmd = struct
   type t =
@@ -77,13 +249,13 @@ module Cmd = struct
   and alloc = Array of exp | Struct of compinfo
   and static = bool
 
-  let fromCilStmt: Cil.stmtkind -> t
+  let fromCilStmt: Sparrow_cil.stmtkind -> t
   =fun s ->
     match s with
     | Instr instrs -> Cinstr instrs
-    | If (exp,b1,b2,loc) -> Cif (exp,b1,b2,loc)
-    | Loop (_,loc,_,_) -> CLoop loc
-    | Return (expo,loc) -> Creturn (expo,loc)
+    | If (exp,b1,b2,loc,_) -> Cif (exp,b1,b2,loc)
+    | Loop (_,loc,_,_,_) -> CLoop loc
+    | Return (expo,loc,_) -> Creturn (expo,loc)
     | _ -> Cskip
 
   let rec to_string : t -> string
@@ -108,7 +280,7 @@ module Cmd = struct
     | Casm _ -> "asm"
     | Cskip -> "skip"
 
-  let location_of : t -> Cil.location
+  let location_of : t -> Sparrow_cil.location
   =fun c ->
     match c with
     | Cset (_,_,l)
@@ -119,14 +291,30 @@ module Cmd = struct
     | Ccall (_,_,_,l) -> l
     | Creturn (_,l) -> l
     | Cassume (_,l) -> l
-    | _ -> Cil.locUnknown
+    | _ -> Sparrow_cil.locUnknown
 
 end
 
 type node = Node.t
 type cmd  = Cmd.t
 
-module G = Graph.Persistent.Digraph.ConcreteBidirectional(Node)
+(* The vertices given to the graph's vertex-adding operations while the
+   journal is open ([emit] in [generate_global_chain]).  A persistent graph
+   gains vertices only through [add_vertex], [add_edge] and [add_edge_e]
+   ([Merge] below adds through them too), so the vertices a graph gained
+   while the journal was open are the journalled ones it has and its
+   predecessor lacked. *)
+let vertex_journal : Node.t list ref = ref []
+let vertex_journal_open = ref false
+
+module G = struct
+  include Graph.Persistent.Digraph.ConcreteBidirectional(Node)
+  let journal v =
+    if !vertex_journal_open then vertex_journal := v :: !vertex_journal
+  let add_vertex g v = journal v; add_vertex g v
+  let add_edge g v1 v2 = journal v1; journal v2; add_edge g v1 v2
+  let add_edge_e g e = journal (E.src e); journal (E.dst e); add_edge_e g e
+end
 module Merge = Graph.Merge.P(G)
 module Topo = Graph.Topological.Make(G)
 module Scc = Graph.Components.Make(G)
@@ -134,7 +322,7 @@ module Scc = Graph.Components.Make(G)
 module GDom = struct
   module V = Node
   type t = G.t
-  let empty = G.empty
+  let empty () = G.empty
   let fromG g = g
   let pred = G.pred
   let succ = G.succ
@@ -142,14 +330,14 @@ module GDom = struct
   let iter_vertex = G.iter_vertex
   let iter_succ = G.iter_succ
   let nb_vertex = G.nb_vertex
-  let add_edge g a b = ()
-  let create : ?size:int -> unit -> t = fun ?size:int () -> empty
+  let add_edge g a b = G.add_edge g a b
+  let create : ?size:int -> unit -> t = fun ?size:int () -> G.empty
 end
 
 module Dom = Graph.Dominator.Make_graph (GDom)
 
 type t = {
-  fd                : Cil.fundec;
+  fd                : Sparrow_cil.fundec;
   graph             : G.t;
   cmd_map           : (node, cmd) BatMap.t;
   dom_fronts        : dom_fronts;
@@ -159,8 +347,250 @@ type t = {
 and dom_fronts = (Node.t, NodeSet.t) BatMap.t
 and dom_tree = G.t
 
+(* Out-of-band provenance for the synthetic [_G_] chain.  The observer owns
+   no CIL or CFG fields: it follows node replacement/removal in a side table
+   and therefore cannot affect graph construction or optimizer decisions. *)
+type global_provenance_item_kind =
+  | Global_variable_declaration
+  | Global_variable_definition
+  | Global_function_definition
 
-let empty : Cil.fundec -> t
+type global_provenance_outcome =
+  | Global_chain_nodes of Node.t list
+  | Global_cfg_dropped
+
+type global_provenance_row = {
+  global_provenance_global_index : int;
+  global_provenance_chain_index : int;
+  global_provenance_item_index : int;
+  global_provenance_initializer_index : int option;
+  global_provenance_name : string;
+  global_provenance_kind : global_provenance_item_kind;
+  global_provenance_location : Sparrow_cil.location;
+  global_provenance_pretrim_nodes : Node.t list;
+  global_provenance_dropped_nodes : Node.t list;
+  global_provenance_drop_mechanisms : string list;
+  global_provenance_outcome : global_provenance_outcome;
+  global_provenance_storage : bool;
+}
+
+type pending_global_provenance_row = {
+  pending_owner : int;
+  pending_global_index : int;
+  pending_chain_index : int;
+  pending_item_index : int;
+  pending_initializer_index : int option;
+  pending_name : string;
+  pending_kind : global_provenance_item_kind;
+  pending_location : Sparrow_cil.location;
+  pending_storage : bool;
+}
+
+type construction_temp_generation_role =
+  | Aggregate_storage
+  | Nested_array_storage
+  | Field_storage
+  | Array_loop_index
+  | String_literal
+  | Sizeof_string
+
+let string_of_construction_temp_generation_role = function
+  | Aggregate_storage -> "aggregate-storage"
+  | Nested_array_storage -> "nested-array-storage"
+  | Field_storage -> "field-storage"
+  | Array_loop_index -> "array-loop-index"
+  | String_literal -> "string-literal"
+  | Sizeof_string -> "sizeof-string"
+
+type construction_temp_outcome =
+  | Construction_temp_survives of Node.t list
+  | Construction_temp_absorbed_by of Node.t list
+  | Construction_temp_dropped
+
+type construction_temp_provenance_row = {
+  construction_temp_owner_global_index : int;
+  construction_temp_owner_chain_index : int;
+  construction_temp_owner_initializer_index : int option;
+  construction_temp_owner_name : string;
+  construction_temp_owner_kind : global_provenance_item_kind;
+  construction_temp_owner_location : Sparrow_cil.location;
+  construction_temp_initializer_or_type_path : string;
+  construction_temp_expression_child_path : string;
+  construction_temp_generation_role : construction_temp_generation_role;
+  construction_temp_type_preimage : string;
+  construction_temp_payload_preimage : string;
+  construction_temp_final_name : string;
+  construction_temp_pretrim_nodes : Node.t list;
+  construction_temp_outcome : construction_temp_outcome;
+}
+
+type construction_temp_owner = {
+  temp_owner_global_index : int;
+  temp_owner_chain_index : int;
+  temp_owner_initializer_index : int option;
+  temp_owner_name : string;
+  temp_owner_kind : global_provenance_item_kind;
+  temp_owner_location : Sparrow_cil.location;
+}
+
+type pending_construction_temp = {
+  pending_temp_id : int;
+  pending_temp_owner : construction_temp_owner;
+  pending_temp_initializer_or_type_path : string;
+  pending_temp_expression_child_path : string;
+  pending_temp_generation_role : construction_temp_generation_role;
+  pending_temp_type_preimage : string;
+  pending_temp_payload_preimage : string;
+  pending_temp_varinfo : Sparrow_cil.varinfo option;
+  pending_temp_initial_name : string;
+  pending_temp_original_nodes : Node.t list;
+}
+
+let global_provenance_recording = ref true
+let global_provenance_tracking_ready = ref false
+let global_provenance_observing_current_cfg = ref false
+let pending_global_provenance_rows : pending_global_provenance_row list ref =
+  ref []
+let completed_global_provenance_rows : global_provenance_row list ref = ref []
+let global_provenance_node_owners : (Node.t, int list) Hashtbl.t =
+  Hashtbl.create 1024
+let global_provenance_decision_drops :
+    (int, (Node.t * string) list) Hashtbl.t =
+  Hashtbl.create 128
+
+let active_construction_temp_owner : construction_temp_owner option ref =
+  ref None
+let next_construction_temp_id = ref 0
+let pending_construction_temps : pending_construction_temp list ref = ref []
+let completed_construction_temp_rows :
+    construction_temp_provenance_row list ref = ref []
+let construction_temp_node_events : (Node.t, int list) Hashtbl.t =
+  Hashtbl.create 257
+
+let global_provenance_rows () = !completed_global_provenance_rows
+let construction_temp_provenance_rows () = !completed_construction_temp_rows
+
+let construction_temp_events node =
+  Option.value (Hashtbl.find_opt construction_temp_node_events node)
+    ~default:[]
+
+let construction_temp_assign events nodes =
+  if !global_provenance_recording && !global_provenance_tracking_ready then
+    NodeSet.iter
+      (fun node ->
+         let old = construction_temp_events node in
+         Hashtbl.replace construction_temp_node_events node
+           (List.sort_uniq Int.compare (events @ old)))
+      nodes
+
+let construction_temp_remove nodes =
+  if !global_provenance_recording && !global_provenance_tracking_ready then
+    NodeSet.iter (Hashtbl.remove construction_temp_node_events) nodes
+
+let construction_temp_replace removed added =
+  if !global_provenance_recording && !global_provenance_tracking_ready then begin
+    let events =
+      NodeSet.fold
+        (fun node events -> construction_temp_events node @ events)
+        removed []
+      |> List.sort_uniq Int.compare
+    in
+    construction_temp_remove removed;
+    construction_temp_assign events added
+  end
+
+let construction_temp_name = function
+  | Sparrow_cil.Var variable, Sparrow_cil.NoOffset -> variable.vname
+  | lvalue -> CilHelper.s_lv lvalue
+
+let construction_temp_varinfo = function
+  | Sparrow_cil.Var variable, Sparrow_cil.NoOffset -> Some variable
+  | _ -> None
+
+let record_construction_temp_for_owner owner ~path ~child_path ~role ~typ
+    ~payload ~lvalue nodes =
+  if !global_provenance_recording && !global_provenance_tracking_ready then begin
+    let id = !next_construction_temp_id in
+    incr next_construction_temp_id;
+    let original_nodes = NodeSet.elements nodes in
+    pending_construction_temps :=
+      { pending_temp_id = id;
+        pending_temp_owner = owner;
+        pending_temp_initializer_or_type_path = path;
+        pending_temp_expression_child_path = child_path;
+        pending_temp_generation_role = role;
+        pending_temp_type_preimage = CilHelper.s_type typ;
+        pending_temp_payload_preimage = payload;
+        pending_temp_varinfo = construction_temp_varinfo lvalue;
+        pending_temp_initial_name = construction_temp_name lvalue;
+        pending_temp_original_nodes = original_nodes }
+      :: !pending_construction_temps;
+    construction_temp_assign [ id ] nodes
+  end
+
+let record_construction_temp ~path ~child_path ~role ~typ ~payload ~lvalue
+    nodes =
+  Option.iter
+    (fun owner ->
+       record_construction_temp_for_owner owner ~path ~child_path ~role ~typ
+         ~payload ~lvalue nodes)
+    !active_construction_temp_owner
+
+let global_provenance_owners node =
+  Option.value (Hashtbl.find_opt global_provenance_node_owners node) ~default:[]
+
+let global_provenance_assign owners nodes =
+  if !global_provenance_recording && !global_provenance_tracking_ready
+     && !global_provenance_observing_current_cfg
+  then
+    NodeSet.iter
+      (fun node ->
+         let old = global_provenance_owners node in
+         Hashtbl.replace global_provenance_node_owners node
+           (List.sort_uniq Int.compare (owners @ old)))
+      nodes
+
+let global_provenance_remove nodes =
+  if !global_provenance_recording && !global_provenance_tracking_ready
+     && !global_provenance_observing_current_cfg
+  then
+    begin
+      NodeSet.iter (Hashtbl.remove global_provenance_node_owners) nodes;
+      construction_temp_remove nodes
+    end
+
+let global_provenance_replace removed added =
+  if !global_provenance_recording && !global_provenance_tracking_ready
+     && !global_provenance_observing_current_cfg
+  then begin
+    let owners =
+      NodeSet.fold
+        (fun node owners -> global_provenance_owners node @ owners)
+        removed []
+      |> List.sort_uniq Int.compare
+    in
+    construction_temp_replace removed added;
+    global_provenance_remove removed;
+    global_provenance_assign owners added
+  end
+
+let global_provenance_record_drop owners node mechanism =
+  if !global_provenance_recording && !global_provenance_tracking_ready
+     && !global_provenance_observing_current_cfg
+  then
+    List.iter
+      (fun owner ->
+         let old =
+           Option.value
+             (Hashtbl.find_opt global_provenance_decision_drops owner)
+             ~default:[]
+         in
+         Hashtbl.replace global_provenance_decision_drops owner
+           ((node, mechanism) :: old))
+      owners
+
+
+let empty : Sparrow_cil.fundec -> t
 =fun fd -> {
   fd                = fd;
   graph             = G.empty;
@@ -173,11 +603,14 @@ let empty : Cil.fundec -> t
 let get_pid : t -> string
 =fun g -> g.fd.svar.vname
 
-let get_formals : t -> Cil.varinfo list
+let get_fd : t -> Sparrow_cil.fundec
+=fun g -> g.fd
+
+let get_formals : t -> Sparrow_cil.varinfo list
 =fun g -> g.fd.sformals
 
-let get_formals_lval : t -> Cil.lval list
-= fun g -> List.map Cil.var g.fd.sformals
+let get_formals_lval : t -> Sparrow_cil.lval list
+= fun g -> List.map Sparrow_cil.var g.fd.sformals
 
 let get_scc_list : t -> node list list
 = fun g -> g.scc_list
@@ -225,10 +658,14 @@ let remove_node : node -> t -> t
           dom_fronts = BatMap.remove n g.dom_fronts;
           dom_tree = G.remove_vertex g.dom_tree n }
 
-(* should be used only after all Cil nodes are made *)
-let add_new_node : node -> cmd -> node -> t -> t
-=fun n cmd s g ->
-  let new_node = Node.make() in
+(* should be used only after all Sparrow_cil nodes are made *)
+let add_new_node : ?rule:Origin.rule -> node -> cmd -> node -> t -> t
+=fun ?rule n cmd s g ->
+  let rule = match rule, cmd with
+    | Some rule, _ -> rule
+    | None, Cmd.Creturn _ -> Origin.Implicit_return
+    | None, _ -> Origin.Return_site in
+  let new_node = Origin.from g.fd.svar.vname n (fun () -> Origin.derive rule) in
     (add_cmd new_node cmd
      >>> remove_edge n s
      >>> add_edge n new_node
@@ -262,10 +699,21 @@ let is_callnode : node -> t -> bool
   | Cmd.Ccall _ -> true
   | _ -> false
 
+(* A node is a return-node iff it is the (unique) return-successor of its
+   (unique) call-node predecessor.  The old definition only checked "the single
+   predecessor is a call-node", which misclassifies the node after a synthetic
+   `sparrow_array_init` Ccall (these are not real calls and the optimizer can
+   leave them with succ-count <> 1): such a successor is NOT a real return-node,
+   yet callof/returnof (which require the call's single successor to be this
+   node) then cannot resolve it.  Requiring returnof-consistency here makes
+   is_returnnode and callof agree by construction -- identical to the old
+   behaviour on every well-formed call/return pair, and correct on malformed
+   ones. *)
 let is_returnnode : node -> t -> bool
 =fun n g ->
-  List.length (pred n g) = 1 &&
-  is_callnode (List.hd (pred n g)) g
+  match pred n g with
+  | [ c ] -> is_callnode c g && (match succ c g with [ r ] -> r = n | _ -> false)
+  | _ -> false
 
 let entryof _ = Node.ENTRY
 let exitof _ = Node.EXIT
@@ -280,10 +728,16 @@ let returnof : node -> t -> node
 let is_inside_loop : node -> t -> bool
 =fun n g -> List.exists (fun scc -> List.length scc > 1 && List.mem n scc) g.scc_list
 
+(* A return node's call is its single predecessor; other nodes are searched. *)
 let callof : node -> t -> node
 =fun r g ->
+  if is_returnnode r g then List.hd (pred r g) else
   try
-    List.find (fun c -> is_callnode c g && returnof c g = r) (nodesof g)
+    (* returnof asserts succ-length = 1; a malformed call-node elsewhere must
+       not abort the search for r's own call-node, so swallow it per candidate. *)
+    List.find
+      (fun c -> is_callnode c g && (try returnof c g = r with _ -> false))
+      (nodesof g)
   with _ ->
     failwith "IntraCfg.callof: given node may not be a return-node"
 
@@ -303,14 +757,14 @@ let generate_assumes : t -> t
               | t::l,_ -> if t.sid = Node.id s1 then s1,s2 else s2,s1
               | _,t::l -> if t.sid = Node.id s2 then s1,s2 else s2,s1 in
             let tassert = Cmd.Cassume (e,loc) in
-            let fassert = Cmd.Cassume (UnOp (LNot,e,Cil.typeOf e),loc) in
-              (add_new_node n fassert fbn
-              >>> add_new_node n tassert tbn) g
+            let fassert = Cmd.Cassume (UnOp (LNot,e,Sparrow_cil.typeOf e),loc) in
+              (add_new_node ~rule:(Origin.Assume false) n fassert fbn
+              >>> add_new_node ~rule:(Origin.Assume true) n tassert tbn) g
           else (* XXX : when if-statement has only one successor.
                         seems to happen inside dead code *)
             let tbn = List.nth succs 0 in
             let tassert = Cmd.Cassume (e,loc) in
-              add_new_node n tassert tbn g
+              add_new_node ~rule:(Origin.Assume true) n tassert tbn g
       | _ -> g
     ) g g
   with _ -> assert (false)
@@ -335,6 +789,7 @@ let remove_empty_nodes : t -> t
     then
       let p = List.nth (pred n g) 0 in
       let s = List.nth (succ n g) 0 in
+        global_provenance_remove (NodeSet.singleton n);
         g |> remove_node n |> add_edge p s
     else g
   ) g g
@@ -348,11 +803,13 @@ let flatten_instructions : t -> t
       let cmds =
         List.map (fun i ->
           match i with
-          | Set (lv,e,loc) -> Cmd.Cset (lv,e,loc)
-          | Call (lvo,f,args,loc) -> Cmd.Ccall (lvo,f,args,loc)
+          | Set (lv,e,loc,_) -> Cmd.Cset (lv,e,loc)
+          | Call (lvo,f,args,loc,_) -> Cmd.Ccall (lvo,f,args,loc)
           | Asm (a,b,c,d,e,f) -> Cmd.Casm (a,b,c,d,e,f)
+          | VarDecl _ -> Cmd.Cskip
         ) instrs in
-      let pairs = List.map (fun c -> (Node.make(),c)) cmds in
+      let pairs = Origin.from (get_pid g) n (fun () ->
+        List.map (fun c -> (Origin.derive Origin.Instruction, c)) cmds) in
       let first,_ = List.nth pairs 0 in
       let last,_ = List.nth pairs (List.length pairs - 1) in
       let preds,succs = pred n g, succ n g in
@@ -371,106 +828,133 @@ let flatten_instructions : t -> t
     | _ -> g
   ) g g
 
-let make_array : Cil.fundec -> Cil.lval -> Cil.typ -> Cil.exp -> Cil.location -> node -> t -> (node * t)
+let make_array : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.typ -> Sparrow_cil.exp -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd lv typ exp loc entry g ->
-  let alloc_node = Node.make () in
-  let size = Cil.BinOp (Cil.Mult, Cil.SizeOf typ, exp, Cil.intType) in
+  let alloc_node = Origin.derive Origin.Array in
+  let size = Sparrow_cil.BinOp (Sparrow_cil.Mult, Sparrow_cil.SizeOf typ, exp, Sparrow_cil.intType) in
   let alloc_cmd = Cmd.Calloc (lv, Cmd.Array size, true, loc) in
   (alloc_node, g |> add_cmd alloc_node alloc_cmd |> add_edge entry alloc_node)
 
-let make_struct : Cil.fundec -> Cil.lval -> Cil.compinfo -> Cil.location -> node -> t -> (node * t)
+let make_struct : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.compinfo -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd lv comp loc entry g ->
-  let alloc_node = Node.make () in
+  let alloc_node = Origin.derive Origin.Struct in
   let alloc_cmd = Cmd.Calloc (lv, Cmd.Struct comp, true, loc) in
   (alloc_node, g |> add_cmd alloc_node alloc_cmd |> add_edge entry alloc_node)
 
-let make_init_loop fd lv exp loc entry f g =
+let make_init_loop ?(path = "type/unknown") fd lv exp loc entry f g =
   (* i = 0 *)
-  let init_node = Node.make () in
-  let idxinfo = Cil.makeTempVar fd (Cil.TInt (IInt, [])) in
-  let idx = (Cil.Var idxinfo, Cil.NoOffset) in
-  let init_value = Cil.Const (Cil.CInt64 (Int64.zero, IInt, None)) in
+  let init_node = Origin.derive (Origin.Init_loop 0) in
+  let idxinfo = Origin.temporary ~string:false fd (Sparrow_cil.TInt (IInt, [])) in
+  let idx = (Sparrow_cil.Var idxinfo, Sparrow_cil.NoOffset) in
+  let init_value = Sparrow_cil.Const (Sparrow_cil.CInt (Sparrow_cil.Cilint.zero_cilint, IInt, None)) in
   let init_cmd = Cmd.Cset (idx, init_value, loc) in
   let g = add_cmd init_node init_cmd g in
+  record_construction_temp
+    ~path:(path ^ "/loop-index") ~child_path:"type-driven"
+    ~role:Array_loop_index ~typ:idxinfo.Sparrow_cil.vtype
+    ~payload:"zero-init" ~lvalue:idx (NodeSet.singleton init_node);
   (* while (i < exp) *)
-  let skip_node = Node.make () in
+  let skip_node = Origin.derive (Origin.Init_loop 1) in
   let g = add_cmd skip_node Cmd.Cskip g in
   let g = add_edge init_node skip_node g in
   let g = add_edge entry init_node g in
-  let assume_node = Node.make () in
-  let cond = Cil.BinOp (Cil.Lt, Cil.Lval idx, exp, Cil.intType) in
+  let assume_node = Origin.derive (Origin.Init_loop 2) in
+  let cond = Sparrow_cil.BinOp (Sparrow_cil.Lt, Sparrow_cil.Lval idx, exp, Sparrow_cil.intType) in
   let assume_cmd = Cmd.Cassume (cond, loc) in
   let g = add_cmd assume_node assume_cmd g in
   let g = add_edge skip_node assume_node g in
-  let nassume_node = Node.make () in
-  let nassume_cmd = Cmd.Cassume (Cil.UnOp (Cil.LNot, cond, Cil.intType), loc) in
+  let nassume_node = Origin.derive (Origin.Init_loop 3) in
+  let nassume_cmd = Cmd.Cassume (Sparrow_cil.UnOp (Sparrow_cil.LNot, cond, Sparrow_cil.intType), loc) in
   let g = add_cmd nassume_node nassume_cmd g in
   let g = add_edge skip_node nassume_node g in
-  let element = Cil.addOffsetLval (Index (Lval (Var idxinfo, NoOffset), NoOffset)) lv in
+  let element = Sparrow_cil.addOffsetLval (Index (Lval (Var idxinfo, NoOffset), NoOffset)) lv in
   (* loop body *)
   let (term, g) = f assume_node element g in
   (* i++ *)
-  let incr_node = Node.make () in
-  let incr_cmd = Cmd.Cset (idx, Cil.BinOp (Cil.PlusA, Cil.Lval idx, Cil.Const (Cil.CInt64 (Int64.one, IInt, None)), Cil.intType), loc) in
+  let incr_node = Origin.derive (Origin.Init_loop 4) in
+  let incr_cmd = Cmd.Cset (idx, Sparrow_cil.BinOp (Sparrow_cil.PlusA, Sparrow_cil.Lval idx, Sparrow_cil.Const (Sparrow_cil.CInt (Sparrow_cil.Cilint.cilint_of_int64 Int64.one, IInt, None)), Sparrow_cil.intType), loc) in
   let g = add_cmd incr_node incr_cmd g in
   let g = add_edge term incr_node g in
   let g = add_edge incr_node skip_node g in
   (nassume_node, g)
 
-let rec make_nested_array : Cil.fundec -> Cil.lval -> Cil.typ -> Cil.exp -> Cil.location -> node -> bool -> t -> (node * t)
+let rec make_nested_array ?(path = "type/unknown") : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.typ -> Sparrow_cil.exp -> Sparrow_cil.location -> node -> bool -> t -> (node * t)
 = fun fd lv typ exp loc entry initialize g ->
   let typ = unrollTypeDeep typ in
   match typ with
     TArray (t, Some size, _) ->
       let f assume_node element g =
         (* tmp = malloc(size); lv[i] = tmp *)
-        let tmp = (Cil.Var (Cil.makeTempVar fd (Cil.TPtr (Cil.TVoid [], []))), Cil.NoOffset) in
+        let tmp = (Sparrow_cil.Var (Origin.temporary ~string:false fd (Sparrow_cil.TPtr (Sparrow_cil.TVoid [], []))), Sparrow_cil.NoOffset) in
         let (term, g) = make_array fd tmp t size loc assume_node g in
-        let cast_node = Node.make () in
-        let cast_cmd = Cmd.Cset (element, Cil.CastE (TPtr (t, []), Cil.Lval tmp), loc) in
+        record_construction_temp
+          ~path:(path ^ "/nested-array/storage")
+          ~child_path:"type-driven" ~role:Nested_array_storage
+          ~typ:(Sparrow_cil.typeOfLval tmp)
+          ~payload:("extent:" ^ CilHelper.s_exp size) ~lvalue:tmp
+          (NodeSet.singleton term);
+        let cast_node = Origin.derive (Origin.Nested_array 0) in
+        let cast_cmd = Cmd.Cset (element, Sparrow_cil.CastE (Explicit, TPtr (t, []), Sparrow_cil.Lval tmp), loc) in
         let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
-        make_nested_array fd element t size loc cast_node initialize g
+        make_nested_array ~path:(path ^ "/nested-array") fd element t size
+          loc cast_node initialize g
       in
-      make_init_loop fd lv exp loc entry f g
+      make_init_loop ~path fd lv exp loc entry f g
   | TComp(comp, _) ->
       let f assume_node element g =
         (* tmp = malloc(size); lv[i] = tmp *)
         let (term, g) = make_struct fd element comp loc assume_node g in
-        generate_allocs_field comp.cfields element fd term g
+        generate_allocs_field ~path:(path ^ "/element-struct")
+          comp.cfields element fd term g
       in
-      make_init_loop fd lv exp loc entry f g
+      make_init_loop ~path fd lv exp loc entry f g
   | _ when initialize ->
       let f assume_node element g =
         (* lv[i] = 0 *)
-        let init_node = Node.make () in
-        let init_cmd = Cmd.Cset (element, Cil.zero, loc) in
+        let init_node = Origin.derive (Origin.Nested_array 1) in
+        let init_cmd = Cmd.Cset (element, Sparrow_cil.zero, loc) in
         (init_node, g |> add_cmd init_node init_cmd |> add_edge assume_node init_node)
       in
-      make_init_loop fd lv exp loc entry f g
+      make_init_loop ~path fd lv exp loc entry f g
   | _ -> (entry, g)
 
-and generate_allocs_field : Cil.fieldinfo list -> Cil.lval -> Cil.fundec -> node -> t ->  (node * t)
+and generate_allocs_field ?(path = "type/unknown") : Sparrow_cil.fieldinfo list -> Sparrow_cil.lval -> Sparrow_cil.fundec -> node -> t ->  (node * t)
 =fun fl lv fd entry g ->
   match fl with
     [] -> (entry, g)
   | fieldinfo::t ->
+      let first = Node.get_next_id () in
+      let field = addOffsetLval (Sparrow_cil.Field (fieldinfo, Sparrow_cil.NoOffset)) lv in
       begin
-      match Cil.unrollTypeDeep fieldinfo.ftype with
+      match Sparrow_cil.unrollTypeDeep fieldinfo.ftype with
       | TArray (typ, Some exp, _) ->
-          let field = addOffsetLval (Cil.Field (fieldinfo, Cil.NoOffset)) lv in
-          let tmp = (Cil.Var (Cil.makeTempVar fd Cil.voidPtrType), Cil.NoOffset) in
+          let tmp = (Sparrow_cil.Var (Origin.temporary ~string:false fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
           let (term, g) = make_array fd tmp typ exp fieldinfo.floc entry g in
-          let cast_node = Node.make () in
-          let cast_cmd = Cmd.Cset (field, Cil.CastE (Cil.TPtr (typ, []), Cil.Lval tmp), fieldinfo.floc) in
+          let field_path = path ^ "/field:" ^ fieldinfo.Sparrow_cil.fname in
+          record_construction_temp
+            ~path:(field_path ^ "/storage") ~child_path:"type-driven"
+            ~role:Field_storage ~typ:(Sparrow_cil.typeOfLval tmp)
+            ~payload:("extent:" ^ CilHelper.s_exp exp) ~lvalue:tmp
+            (NodeSet.singleton term);
+          let cast_node = Origin.derive Origin.Field_cast in
+          let cast_cmd = Cmd.Cset (field, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval tmp), fieldinfo.floc) in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
-          let (term, g) = make_nested_array fd field typ exp fieldinfo.floc cast_node false g in
-            generate_allocs_field t lv fd term g
+          let (term, g) =
+            make_nested_array ~path:field_path fd field typ exp fieldinfo.floc
+              cast_node false g
+          in
+          Origin.field fd field first;
+          generate_allocs_field ~path t lv fd term g
       | TComp (comp, _) ->
-          let field = addOffsetLval (Cil.Field (fieldinfo, Cil.NoOffset)) lv in
           let (term, g) = make_struct fd field comp fieldinfo.floc entry g in
-          let (term, g) = generate_allocs_field comp.cfields field fd term g in
-          generate_allocs_field t lv fd term g
-      | _ -> generate_allocs_field t lv fd entry g
+          let (term, g) =
+            generate_allocs_field
+              ~path:(path ^ "/field:" ^ fieldinfo.Sparrow_cil.fname)
+              comp.cfields field fd term g
+          in
+          Origin.field fd field first;
+          generate_allocs_field ~path t lv fd term g
+      | _ -> generate_allocs_field ~path t lv fd entry g
       end
 and get_base_type typ =
   match typ with
@@ -478,134 +962,239 @@ and get_base_type typ =
   | TPtr (t, _) -> get_base_type t
   | _ -> typ
 
-let rec generate_allocs : Cil.fundec -> Cil.varinfo list -> node -> t -> (node * t)
+let rec generate_allocs : Sparrow_cil.fundec -> Sparrow_cil.varinfo list -> node -> t -> (node * t)
 =fun fd vl entry g ->
   match vl with
     [] -> (entry, g)
   | varinfo::t ->
-      begin
-      match Cil.unrollTypeDeep varinfo.vtype with
+      let rec ordinal i = function
+        | v :: _ when v == varinfo -> i
+        | _ :: rest -> ordinal (i + 1) rest
+        | [] -> invalid_arg "IntraCfg.generate_allocs" in
+      Origin.within fd.svar.vname (Origin.Local (ordinal 0 fd.slocals)) (fun () ->
+      match Sparrow_cil.unrollTypeDeep varinfo.vtype with
      | TArray (typ, Some exp, _) ->
-          let lv = (Cil.Var varinfo, Cil.NoOffset) in
-          let tmp = (Cil.Var (Cil.makeTempVar fd Cil.voidPtrType), Cil.NoOffset) in
+          let lv = (Sparrow_cil.Var varinfo, Sparrow_cil.NoOffset) in
+          let tmp = (Sparrow_cil.Var (Origin.temporary ~string:false fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
           let (term, g) = make_array fd tmp typ exp varinfo.vdecl entry g in
-          let cast_node = Node.make () in
-          let cast_cmd = Cmd.Cset (lv, Cil.CastE (Cil.TPtr (unrollTypeDeep typ, []), Cil.Lval tmp), varinfo.vdecl) in
+          let cast_node = Origin.derive Origin.Local_cast in
+          let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (unrollTypeDeep typ, []), Sparrow_cil.Lval tmp), varinfo.vdecl) in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
-          let (term, g) = make_nested_array fd lv typ exp varinfo.vdecl cast_node false g in
+          let (term, g) =
+            make_nested_array ~path:("type/local:" ^ varinfo.Sparrow_cil.vname)
+              fd lv typ exp varinfo.vdecl cast_node false g
+          in
             generate_allocs fd t term g
       | TComp (comp, _) ->
-          let lv = (Cil.Var varinfo, Cil.NoOffset) in
+          let lv = (Sparrow_cil.Var varinfo, Sparrow_cil.NoOffset) in
           let (term, g) = make_struct fd lv comp varinfo.vdecl entry g in
-          let (term, g) = generate_allocs_field comp.cfields lv fd term g in
+          let (term, g) =
+            generate_allocs_field ~path:("type/local:" ^ varinfo.Sparrow_cil.vname)
+              comp.cfields lv fd term g
+          in
           generate_allocs fd t term g
-      | _ -> generate_allocs fd t entry g
-      end
+      | _ -> generate_allocs fd t entry g)
 
 let replace_node_graph : node -> node -> node -> t -> t
 = fun old entry exit g ->
+  let rec replacement_nodes seen = function
+    | [] -> seen
+    | node :: work when NodeSet.mem node seen ->
+      replacement_nodes seen work
+    | node :: work ->
+      let seen = NodeSet.add node seen in
+      if Node.equal node exit then replacement_nodes seen work
+      else replacement_nodes seen (succ node g @ work)
+  in
+  let replacement = replacement_nodes NodeSet.empty [entry] in
   let preds = pred old g in
   let succs = succ old g in
   let g = remove_node old g in
   let g = List.fold_left (fun g p -> add_edge p entry g) g preds in
   let g = List.fold_left (fun g s -> add_edge exit s g) g succs in
+  global_provenance_replace (NodeSet.singleton old) replacement;
   g
 
 (* string allocation  *)
-let transform_string_allocs : Cil.fundec -> t -> t
+let construction_temp_owner_of_pending pending =
+  { temp_owner_global_index = pending.pending_global_index;
+    temp_owner_chain_index = pending.pending_chain_index;
+    temp_owner_initializer_index = pending.pending_initializer_index;
+    temp_owner_name = pending.pending_name;
+    temp_owner_kind = pending.pending_kind;
+    temp_owner_location = pending.pending_location }
+
+let construction_temp_owners_for_node node =
+  let owners =
+    global_provenance_owners node
+    |> List.filter_map (fun owner ->
+           !pending_global_provenance_rows
+           |> List.find_opt (fun pending -> pending.pending_owner = owner)
+           |> Option.map construction_temp_owner_of_pending)
+    |> List.sort_uniq (fun left right ->
+           compare
+             (left.temp_owner_global_index, left.temp_owner_chain_index,
+              left.temp_owner_initializer_index, left.temp_owner_name)
+             (right.temp_owner_global_index, right.temp_owner_chain_index,
+              right.temp_owner_initializer_index, right.temp_owner_name))
+  in
+  let declared_elsewhere name =
+    !pending_global_provenance_rows
+    |> List.exists (fun pending ->
+           pending.pending_name = name
+           && pending.pending_kind <> Global_variable_declaration)
+  in
+  let owners =
+    owners
+    |> List.filter (fun owner ->
+           owner.temp_owner_kind <> Global_variable_declaration
+           || not (declared_elsewhere owner.temp_owner_name))
+    |> List.sort (fun left right ->
+           Int.compare left.temp_owner_global_index
+             right.temp_owner_global_index)
+  in
+  (* String expansion happens after CFG-node coalescing.  Reuse the global
+     construction observer's established primary-owner rule: declarations
+     shadowed by a definition are not owners, and the first surviving global
+     owns a coalesced node.  This selects the construction event, not a value
+     or digest match, and makes the singular owner part of the observation. *)
+  match owners with [] -> [] | owner :: _ -> [ owner ]
+
+let rec construction_offset_path = function
+  | Sparrow_cil.NoOffset -> ""
+  | Sparrow_cil.Field (field, rest) ->
+    "/field:" ^ field.Sparrow_cil.fname ^ construction_offset_path rest
+  | Sparrow_cil.Index (index, rest) ->
+    let component =
+      if Sparrow_cil.isConstant index then "index:" ^ CilHelper.s_exp index
+      else "index-expression:" ^ CilHelper.s_exp index
+    in
+    "/" ^ component ^ construction_offset_path rest
+
+let construction_lvalue_path = function
+  | Sparrow_cil.Var _, offset -> "initializer" ^ construction_offset_path offset
+  | Sparrow_cil.Mem _, offset ->
+    "initializer/memory" ^ construction_offset_path offset
+
+let transform_string_allocs : Sparrow_cil.fundec -> t -> t
 = fun fd g ->
-  let rec replace_str : Cil.exp -> Cil.exp * (Cil.lval * string) list
-  = fun e ->
+  let rec replace_str child_path e =
     match e with
-      Const (CStr s) ->
-        let tempinfo = Cil.makeTempVar fd (Cil.TPtr (Cil.TInt (IChar, []), [])) in
-        let temp = (Cil.Var tempinfo, Cil.NoOffset) in
-          (Lval temp, [(temp, s)])
+      Const (CStr (s, _)) ->
+        let tempinfo = Origin.temporary ~string:true fd (Sparrow_cil.TPtr (Sparrow_cil.TInt (IChar, []), [])) in
+        let temp = (Sparrow_cil.Var tempinfo, Sparrow_cil.NoOffset) in
+          (Lval temp,
+           [ (temp, s, String_literal, child_path, tempinfo.vtype) ])
     | Lval (Mem exp, off) ->
-        let (exp', l) = replace_str exp in
+        let (exp', l) = replace_str (child_path ^ "/lvalue-memory") exp in
         (match l with [] -> (e, l) | _ -> (Lval (Mem exp', off), l))
     | SizeOfStr s ->
-        let tempinfo = Cil.makeTempVar fd (Cil.TPtr (Cil.TInt (IChar, []), [])) in
-        let temp = (Cil.Var tempinfo, Cil.NoOffset) in
-          (Lval temp, [(temp, s)])
+        let tempinfo = Origin.temporary ~string:true fd (Sparrow_cil.TPtr (Sparrow_cil.TInt (IChar, []), [])) in
+        let temp = (Sparrow_cil.Var tempinfo, Sparrow_cil.NoOffset) in
+          (Lval temp,
+           [ (temp, s, Sizeof_string, child_path, tempinfo.vtype) ])
     | SizeOfE exp ->
-        let (exp', l) = replace_str exp in
+        let (exp', l) = replace_str (child_path ^ "/sizeof") exp in
         (match l with [] -> (e, l) | _ -> (SizeOfE exp', l))
     | AlignOfE exp ->
-        let (exp', l) = replace_str exp in
+        let (exp', l) = replace_str (child_path ^ "/alignof") exp in
         (match l with [] -> (e, l) | _ -> (AlignOfE exp', l))
     | UnOp (u, exp, t) ->
-        let (exp', l) = replace_str exp in
+        let (exp', l) = replace_str (child_path ^ "/unary") exp in
         (match l with [] -> (e, l) | _ -> (UnOp (u, exp', t), l))
     | BinOp (b, e1, e2, t) ->
-        let (e1', l1) = replace_str e1 in
-        let (e2', l2) = replace_str e2 in
+        let (e1', l1) = replace_str (child_path ^ "/binary-left") e1 in
+        let (e2', l2) = replace_str (child_path ^ "/binary-right") e2 in
         (match l1@l2 with [] -> (e, []) | _ -> (BinOp (b, e1', e2', t), l1@l2))
-    | CastE (t, exp) ->
-        let (exp', l) = replace_str exp in
-        (match l with [] -> (e, l) | _ -> (CastE (t, exp'), l))
+    | CastE (_, t, exp) ->
+        let (exp', l) = replace_str (child_path ^ "/cast") exp in
+        (match l with [] -> (e, l) | _ -> (CastE (Sparrow_cil.Explicit, t, exp'), l))
     | _ -> (e, [])
   in
-  let generate_sallocs : (Cil.lval * string) list -> Cil.location -> node -> t -> (node * t)
-  = fun l loc node g ->
-    List.fold_left (fun (node, g) (lv, s) ->
-                    let new_node = Node.make () in
+  let generate_sallocs owners path l loc node g =
+    List.fold_left (fun (node, g) (lv, s, role, child_path, typ) ->
+                    let new_node = Origin.derive Origin.String_alloc in
                     let g = add_edge node new_node g in
                     let cmd = Cmd.Csalloc (lv, s, loc) in
                     let g = add_cmd new_node cmd g in
+                    List.iter
+                      (fun owner ->
+                         record_construction_temp_for_owner owner ~path
+                           ~child_path ~role ~typ ~payload:s ~lvalue:lv
+                           (NodeSet.singleton new_node))
+                      owners;
                     (new_node, g)) (node, g) l
     in
     (* make it consistent with manual encoding in *Sem.ml *)
     let targets = ["strcpy"; "strcat"; "strncpy"; "memcpy"; "memmove"; "strlen"; "fgets";
                    "sprintf"; "scanf"; "getenv"; "strdup"; "gettext"; "getpwent"; "strchr"; "strrchr" ] in
-    fold_node (fun n g ->
+    fold_node (fun n g -> Origin.from fd.svar.vname n @@ fun () ->
       match find_cmd n g with
         Cmd.Cset (lv, e, loc) ->
-          (match replace_str e with
+          (match replace_str "expression-root" e with
             (_, []) -> g
           | (e, l) ->
-            let (empty_node, last_node) = (Node.make (), Node.make ()) in
+            let (empty_node, last_node) = (Origin.derive (Origin.String_command 1), Origin.derive (Origin.String_command 2)) in
             let g = add_cmd empty_node Cmd.Cskip g in
-            let (node, g) = generate_sallocs l loc empty_node g in
+            let (node, g) =
+              generate_sallocs (construction_temp_owners_for_node n)
+                (construction_lvalue_path lv) l loc empty_node g
+            in
             let cmd = Cmd.Cset (lv, e, loc) in
             let g = add_cmd last_node cmd g in
             let g = add_edge node last_node g in
               replace_node_graph n empty_node last_node g)
       | Cmd.Cassume (e, loc) ->
-          (match replace_str e with
+          (match replace_str "assume-root" e with
             (_, []) -> g
           | (e, l) ->
-            let (empty_node, last_node) = (Node.make (), Node.make ()) in
+            let (empty_node, last_node) = (Origin.derive (Origin.String_command 3), Origin.derive (Origin.String_command 4)) in
             let g = add_cmd empty_node Cmd.Cskip g in
-            let (node, g) = generate_sallocs l loc empty_node g in
+            let (node, g) =
+              generate_sallocs (construction_temp_owners_for_node n)
+                "command/assume" l loc empty_node g
+            in
             let cmd = Cmd.Cassume (e, loc) in
             let g = add_cmd last_node cmd g in
             let g = add_edge node last_node g in
               replace_node_graph n empty_node last_node g)
         (* do not allocate memory cells for arguments of external lib calls *)
-      | Cmd.Ccall (lv, Cil.Lval (Cil.Var f, Cil.NoOffset), el, loc)
-        when f.vstorage = Cil.Extern && not (List.mem f.vname targets) -> g
+      | Cmd.Ccall (lv, Sparrow_cil.Lval (Sparrow_cil.Var f, Sparrow_cil.NoOffset), el, loc)
+        when f.vstorage = Sparrow_cil.Extern
+             && not (List.mem (SourceName.of_varinfo f) targets) -> g
       | Cmd.Ccall (lv, f, el, loc) ->
-          let (el, l) = List.fold_left (fun (el, l) param ->
-              let (e', l') = replace_str param in
-              (el@[e'], l@l')) ([], []) el in
+          let (el, l) =
+            el
+            |> List.mapi (fun index param -> index, param)
+            |> List.fold_left (fun (el, l) (index, param) ->
+                 let (e', l') =
+                   replace_str ("call-argument:" ^ string_of_int index) param
+                 in
+                 (el@[e'], l@l')) ([], [])
+          in
           (match (el, l) with
             (_, []) -> g
           | (el, l) ->
-            let (empty_node, last_node) = (Node.make (), Node.make ()) in
+            let (empty_node, last_node) = (Origin.derive (Origin.String_command 5), Origin.derive (Origin.String_command 6)) in
             let g = add_cmd empty_node Cmd.Cskip g in
-            let (node, g) = generate_sallocs l loc empty_node g in
+            let (node, g) =
+              generate_sallocs (construction_temp_owners_for_node n)
+                "command/call" l loc empty_node g
+            in
             let cmd = Cmd.Ccall (lv, f, el, loc) in
             let g = add_cmd last_node cmd g in
             let g = add_edge node last_node g in
               replace_node_graph n empty_node last_node g)
       | Cmd.Creturn (Some e, loc) ->
-           (match replace_str e with
+           (match replace_str "return-root" e with
             (_, []) -> g
           | (e, l) ->
-            let (empty_node, last_node) = (Node.make (), Node.make ()) in
+            let (empty_node, last_node) = (Origin.derive (Origin.String_command 7), Origin.derive (Origin.String_command 8)) in
             let g = add_cmd empty_node Cmd.Cskip g in
-            let (node, g) = generate_sallocs l loc empty_node g in
+            let (node, g) =
+              generate_sallocs (construction_temp_owners_for_node n)
+                "command/return" l loc empty_node g
+            in
             let cmd = Cmd.Creturn (Some e, loc) in
             let g = add_cmd last_node cmd g in
             let g = add_edge node last_node g in
@@ -613,14 +1202,14 @@ let transform_string_allocs : Cil.fundec -> t -> t
       | _ -> g) g g
 
 (** transform malloc to Calloc *)
-let transform_allocs : Cil.fundec -> t -> t
+let transform_allocs : Sparrow_cil.fundec -> t -> t
 = fun fd g ->
   let rec transform lv exp loc node g =
     match exp with
       BinOp (Mult, SizeOf typ, e, _)
     | BinOp (Mult, e, SizeOf typ, _) ->
       begin
-        let typ = Cil.unrollTypeDeep typ in
+        let typ = Sparrow_cil.unrollTypeDeep typ in
         match lv, typ with
           (Var v, NoOffset), TComp (_, _) -> (* dynamic struct array alloc *)
             let cmd = Cmd.Calloc (lv, Cmd.Array exp, false, loc) in
@@ -631,13 +1220,13 @@ let transform_allocs : Cil.fundec -> t -> t
             let g = add_cmd node cmd g in
             (node, g)
       end
-    | SizeOf typ | CastE (_, SizeOf typ) ->
+    | SizeOf typ | CastE (_, _, SizeOf typ) ->
       begin
-        let typ = Cil.unrollTypeDeep typ in
+        let typ = Sparrow_cil.unrollTypeDeep typ in
         match lv, typ with
           (Var v, NoOffset), TComp (comp, _) ->   (* dynamic struct alloc *)
-            let cast_node = Node.make () in
-            let cast_cmd = Cmd.Cset (lv, Cil.CastE (Cil.TPtr (typ, []), Cil.Lval lv), loc) in
+            let cast_node = Origin.derive (Origin.Dynamic_alloc 0) in
+            let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval lv), loc) in
             g
             |> add_cmd node (Cmd.Calloc (lv, Cmd.Array exp, false, loc))
             |> add_cmd cast_node cast_cmd
@@ -648,17 +1237,18 @@ let transform_allocs : Cil.fundec -> t -> t
           let g = add_cmd node cmd g in
             (node, g)
       end
-    | SizeOfE e -> transform lv (SizeOf (Cil.typeOf e)) loc node g
+    | SizeOfE e -> transform lv (SizeOf (Sparrow_cil.typeOf e)) loc node g
     | e ->
       let cmd = Cmd.Calloc (lv, Cmd.Array exp, false, loc) in
       let g = add_cmd node cmd g in
       (node, g)
   in
-  fold_node (fun n g ->
+  fold_node (fun n g -> Origin.from fd.svar.vname n @@ fun () ->
       match find_cmd n g with
         Cmd.Ccall (Some lv, Lval (Var varinfo, _), args, loc) ->
-          if varinfo.vname = "malloc" || varinfo.vname = "__builtin_alloca" then
-            let new_node = Node.make () in
+          let name = SourceName.of_varinfo varinfo in
+          if name = "malloc" || name = "__builtin_alloca" then
+            let new_node = Origin.derive (Origin.Dynamic_alloc 1) in
             let preds = pred n g in
             let succs = succ n g in
             let g = List.fold_left (fun g s -> remove_edge n s g) g succs in
@@ -671,15 +1261,26 @@ let transform_allocs : Cil.fundec -> t -> t
           else g
       | _ -> g) g g
 
+(** A direct call never returns when the callee is upstream's [exit] or
+    [abort], or when its declaration carries the C11 [_Noreturn] specifier or
+    the GNU [noreturn] attribute.  CIL strips the underscores of
+    [__noreturn__] and stores this name attribute on the varinfo (merging
+    unions the attributes of every declaration); the function type is also
+    checked, as CIL's own fall-through test does for indirect calls. *)
+let is_noreturn_callee : varinfo -> bool
+=fun varinfo ->
+  (let name = SourceName.of_varinfo varinfo in name = "exit" || name = "abort")
+  || hasAttribute "noreturn" varinfo.vattr
+  || hasAttribute "noreturn" (typeAttrs varinfo.vtype)
+
 (** for each call-node, insert a corresponding return-node *)
 let insert_return_nodes : t -> t
 =fun g ->
   List.fold_left (fun g c ->
     match find_cmd c g with
-      Cmd.Ccall (_, Lval (Var varinfo, _), _, _)
-      when varinfo.vname = "exit" || varinfo.vname = "abort" ->
+      Cmd.Ccall (_, Lval (Var varinfo, _), _, _) when is_noreturn_callee varinfo ->
         let r = returnof c g in
-        let n = Node.make () in
+        let n = Origin.from (get_pid g) c (fun () -> Origin.derive Origin.Noreturn_return) in
         remove_edge c r g
         |> add_cmd n Cmd.Cskip
         |> add_edge c n
@@ -697,7 +1298,14 @@ let insert_return_before_exit : t -> t
     | Cmd.Creturn _ -> acc
     | _ -> add_new_node node (Cmd.Creturn (None, locUnknown)) Node.EXIT acc
   in
-  list_fold add_return (pred Node.EXIT g) g
+  (* A never-returning function (e.g. an infinite loop, or a body that only
+     exit()s/abort()s) has no node flowing to EXIT, so EXIT is never added to
+     the graph.  The whole program never has these (mergecil + reachability
+     prune them), but a translation unit built alone can -- guard against asking
+     ocamlgraph for the predecessors of a vertex that is not present. *)
+  if G.mem_vertex g.graph Node.EXIT then
+    list_fold add_return (pred Node.EXIT g) g
+  else g
 
 let compute_dom : t -> t
 =fun g ->
@@ -718,43 +1326,54 @@ let compute_dom : t -> t
 let compute_scc : t -> t
 =fun g -> { g with scc_list = Scc.scc_list g.graph }
 
-let rec process_gvardecl : Cil.fundec -> Cil.lval -> Cil.location -> node -> t -> (node * t)
+let rec process_gvardecl : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd lv loc entry g ->
-  match Cil.unrollTypeDeep (Cil.typeOfLval lv) with
+  match Sparrow_cil.unrollTypeDeep (Sparrow_cil.typeOfLval lv) with
   | TArray (typ, Some exp, _) ->
-      let tmp = (Cil.Var (Cil.makeTempVar fd Cil.voidPtrType), Cil.NoOffset) in
+      let tmp = (Sparrow_cil.Var (Origin.temporary ~string:false fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
       let (term, g) = make_array fd tmp typ exp loc entry g in
-      let cast_node = Node.make () in
-      let cast_cmd = Cmd.Cset (lv, Cil.CastE (Cil.TPtr (typ, []), Cil.Lval tmp), loc) in
+      record_construction_temp
+        ~path:"type/root-array/storage" ~child_path:"type-driven"
+        ~role:Aggregate_storage ~typ:(Sparrow_cil.typeOfLval tmp)
+        ~payload:("extent:" ^ CilHelper.s_exp exp) ~lvalue:tmp
+        (NodeSet.singleton term);
+      let cast_node = Origin.derive (Origin.Global_storage 0) in
+      let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval tmp), loc) in
       let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
-      let (term, g) = make_nested_array fd lv typ exp loc cast_node true g in
+      let (term, g) =
+        make_nested_array ~path:"type/root-array" fd lv typ exp loc cast_node
+          true g
+      in
       (term, g)
   | TInt (_, _) | TFloat (_, _) ->
-      let node = Node.make () in
-      let cmd = Cmd.Cset (lv, Cil.zero, loc) in
+      let node = Origin.derive (Origin.Global_storage 1) in
+      let cmd = Cmd.Cset (lv, Sparrow_cil.zero, loc) in
       (node, g |> add_cmd node cmd |> add_edge entry node)
   | TComp (comp, _) ->
       let (term, g) = make_struct fd lv comp loc entry g in
-      let (term, g) = generate_allocs_field comp.cfields lv fd term g in
+      let (term, g) =
+        generate_allocs_field ~path:"type/root-struct" comp.cfields lv fd
+          term g
+      in
       (term, g)
   | _ -> (entry, g)
 
-let rec process_init : Cil.fundec -> Cil.lval -> Cil.init -> Cil.location -> node -> t -> (node * t)
+let rec process_init : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.init -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd lv i loc entry g ->
   match i with
     SingleInit exp ->
-      let new_node = Node.make () in
+      let new_node = Origin.derive Origin.Global_initializer in
       let cmd = Cmd.Cset (lv, exp, loc) in
       let g = add_edge entry new_node (add_cmd new_node cmd g) in
       (new_node, g)
   | CompoundInit (typ, ilist) ->
       List.fold_left (fun (node, g) (offset, init) ->
-          let lv = Cil.addOffsetLval offset lv in
+          let lv = Sparrow_cil.addOffsetLval offset lv in
           process_init fd lv init loc node g) (entry, g) ilist
 
-let rec process_gvar : Cil.fundec -> Cil.lval -> Cil.initinfo -> Cil.location -> node -> t -> (node * t)
+let rec process_gvar : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil.initinfo -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd lv i loc entry g ->
-  match (Cil.typeOfLval lv, i.init) with
+  match (Sparrow_cil.typeOfLval lv, i.init) with
     (_, None) -> process_gvardecl fd lv loc entry g     (* e.g., int global;     *)
   | (_, Some (SingleInit exp as init)) ->               (* e.g., int global = 1; *)
       process_init fd lv init loc entry g
@@ -762,38 +1381,50 @@ let rec process_gvar : Cil.fundec -> Cil.lval -> Cil.initinfo -> Cil.location ->
       let (node, g) = process_gvardecl fd lv loc entry g in
       process_init fd lv init loc node g
 
-let get_main_dec : Cil.global list -> (Cil.fundec * Cil.location) option
+let get_main_dec : Sparrow_cil.global list -> (Sparrow_cil.fundec * Sparrow_cil.location) option
 = fun globals ->
   List.fold_left (fun s g ->
                   match g with
-                    Cil.GFun (fundec, loc)
+                    Sparrow_cil.GFun (fundec, loc)
                     when fundec.svar.vname = "main" -> Some (fundec, loc)
                   | _ -> s) None globals
 
-let process_fundecl : Cil.fundec -> Cil.fundec -> Cil.location -> node -> t -> (node * t)
+let process_fundecl : Sparrow_cil.fundec -> Sparrow_cil.fundec -> Sparrow_cil.location -> node -> t -> (node * t)
 = fun fd fundecl loc node g ->
-  let new_node = Node.make () in
+  let new_node = Origin.derive Origin.Function_value in
   let cmd = Cmd.Cfalloc ((Var fundecl.svar, NoOffset), fundecl, loc) in
   let g = add_edge node new_node (add_cmd new_node cmd g) in
   (new_node, g)
 
-let generate_cmd_args : Cil.fundec -> Cil.location -> t -> node * t
+let generate_cmd_args : Sparrow_cil.fundec -> Sparrow_cil.location -> t -> node * t
 = fun fd loc g ->
-  let (argc, argv) = ((Cil.Var (List.nth fd.sformals 0), Cil.NoOffset), (Cil.Var (List.nth fd.sformals 1), Cil.NoOffset)) in
-  let arg_node = Node.make () in
-  let arg_cmd = Cmd.Ccall (None, Cil.Lval (Cil.Var (Cil.makeGlobalVar "sparrow_arg" Cil.voidType), Cil.NoOffset), [Cil.Lval argc; Cil.Lval argv], loc) in
+  let (argc, argv) = ((Sparrow_cil.Var (List.nth fd.sformals 0), Sparrow_cil.NoOffset), (Sparrow_cil.Var (List.nth fd.sformals 1), Sparrow_cil.NoOffset)) in
+  let arg_node = Origin.derive (Origin.Argument 0) in
+  let arg_cmd = Cmd.Ccall (None, Sparrow_cil.Lval (Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "sparrow_arg" Sparrow_cil.voidType), Sparrow_cil.NoOffset), [Sparrow_cil.Lval argc; Sparrow_cil.Lval argv], loc) in
 
   let (optind, optarg) =
-    ((Cil.Var (Cil.makeGlobalVar "optind" Cil.intType), Cil.NoOffset),
-     (Cil.Var (Cil.makeGlobalVar "optarg" Cil.charPtrType), Cil.NoOffset))
+    ((Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "optind" Sparrow_cil.intType), Sparrow_cil.NoOffset),
+     (Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "optarg" Sparrow_cil.charPtrType), Sparrow_cil.NoOffset))
   in
-  let opt_node = Node.make () in
-  let opt_cmd = Cmd.Ccall (None, Cil.Lval (Cil.Var (Cil.makeGlobalVar "sparrow_opt" Cil.voidType), Cil.NoOffset), [Cil.Lval optind; Cil.Lval optarg], loc) in
+  let opt_node = Origin.derive (Origin.Argument 1) in
+  let opt_cmd = Cmd.Ccall (None, Sparrow_cil.Lval (Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "sparrow_opt" Sparrow_cil.voidType), Sparrow_cil.NoOffset), [Sparrow_cil.Lval optind; Sparrow_cil.Lval optarg], loc) in
   let g = g |> add_cmd arg_node arg_cmd |> add_cmd opt_node opt_cmd |> add_edge Node.ENTRY arg_node |> add_edge arg_node opt_node in
   (opt_node, g)
 
-let init : Cil.fundec -> Cil.location -> t
+let init : Sparrow_cil.fundec -> Sparrow_cil.location -> t
 =fun fd loc ->
+  let pid = fd.svar.vname in
+  Origin.seed pid Node.ENTRY Origin.Entry;
+  Origin.seed pid Node.EXIT Origin.Exit;
+  let rec block path b = List.iteri (fun i s ->
+    let path = path @ [ Origin.At i ] in
+    Origin.seed pid (Node.of_id s.sid) (Origin.Statement (Node.of_id s.sid, path));
+    match s.skind with
+    | If (_, a, b, _, _) -> block (path @ [ Origin.Then ]) a; block (path @ [ Origin.Else ]) b
+    | Switch (_, b, _, _, _) | Loop (b, _, _, _, _) | Block b -> block (path @ [ Origin.Body ]) b
+    | _ -> ()) b.bstmts in
+  if Option.is_some !Origin.active then block [] fd.sbody;
+  Origin.within pid Origin.Function @@ fun () ->
   let entry = Node.fromCilStmt (List.nth fd.sallstmts 0) in
   let g =
     (* add nodes *)
@@ -829,35 +1460,285 @@ let init : Cil.fundec -> Cil.location -> t
   |> insert_return_nodes
   |> insert_return_before_exit
 
-let generate_global_proc : Cil.global list -> Cil.fundec -> t
+(* [defined_extern_storage = false] (the whole program): an [extern]
+   declaration of a variable the program defines gets no storage of its own.
+   C gives storage and zero initialization to definitions and tentative
+   definitions only; the definition's own construction provides them.  A
+   variable declared but never defined keeps the declaration's storage.  A
+   translation unit alone keeps every declaration's construction.
+
+   The whole program also constructs the storage of every definition before
+   the rest of the chain.  C gives
+   every object of static duration its storage before any initializer runs,
+   and an initializer reads that storage when it takes the address of a
+   field or an element, or lets an array decay ([&s.f], [&a[i]], [a]).
+   Without its own declaration storage, a use in an earlier unit than the
+   defining one would otherwise read nothing, and the result would depend on
+   the order of the units.  The storage of a definition is what its
+   declaration alone would construct ([process_gvardecl]); the initializer
+   ([process_init]) keeps its place.  A translation unit alone keeps one
+   pass: every use there follows a declaration with storage.
+
+   Every generated node records whether it belongs to the storage of its
+   global or to the rest of its construction ([global_provenance_storage]),
+   so a client that builds the units alone can construct that storage first
+   too.
+
+   The whole program also constructs every variable once.  C gives an
+   object one storage and one initialization: its initialized definition's
+   (a tentative definition contributes zero initialization only when no
+   initialized definition exists).  The CIL merge keeps a tentative
+   definition that comes first in the merge order and also the later
+   initialized definition of the same variable, and both items then carry
+   the shared varinfo's initializer (mergecil pass 2, [renameVisitor#vglob]);
+   a later tentative definition, or a tentative definition after the
+   initialized one, is dropped.  A translation unit keeps one definition of
+   a variable (cabs2cil turns the others into declarations), so several
+   definitions of one variable in the whole program are exactly this case:
+   the first is the tentative definition and the second the initialized
+   one.  Only the initialized definition constructs the variable (storage
+   and initializer, at its own position); the tentative definition
+   constructs nothing, as a declaration of a defined variable.  Further
+   definitions repeat an initialized definition (invalid C) and construct
+   nothing either. *)
+(* The constructions of the global chain in order: the index of the global
+   and the part it constructs.  [whole_program] is [generate_global_chain]'s
+   [defined_extern_storage = false]. *)
+let global_constructions ~whole_program globals =
+  let defined = Hashtbl.create 257 and occurrences = Hashtbl.create 257 in
+  (* the definition (global index) that constructs a variable defined more
+     than once in the whole program: the second, its initialized definition *)
+  let constructing = Hashtbl.create 17 in
+  if whole_program then
+    List.iteri
+      (fun index -> function
+         | Sparrow_cil.GVar (variable, _, _) ->
+           let name = variable.Sparrow_cil.vname in
+           let count = Option.value (Hashtbl.find_opt occurrences name) ~default:0 in
+           Hashtbl.replace defined name ();
+           Hashtbl.replace occurrences name (count + 1);
+           if count = 1 then Hashtbl.replace constructing name index
+         | _ -> ())
+      globals;
+  let constructs (variable : Sparrow_cil.varinfo) gidx =
+    match Hashtbl.find_opt constructing variable.vname with
+    | None -> true
+    | Some index -> index = gidx
+  in
+  (* the storage a definition constructs: none for a single initializer *)
+  let storage (initinfo : Sparrow_cil.initinfo) =
+    match initinfo.init with None | Some (CompoundInit _) -> true | Some (SingleInit _) -> false
+  in
+  let globals = List.mapi (fun index global -> (index, global)) globals in
+  let storage_first =
+    if not whole_program then []
+    else
+      List.filter_map
+        (function
+          | index, Sparrow_cil.GVar (variable, initinfo, _)
+            when constructs variable index && storage initinfo -> Some (index, Origin.Storage)
+          | _ -> None)
+        globals
+  in
+  storage_first
+  @ List.concat_map
+      (function
+        | index, Sparrow_cil.GVar (variable, initinfo, _) when constructs variable index ->
+          (if not whole_program && storage initinfo then [ (index, Origin.Storage) ] else [])
+          @ (if Option.is_some initinfo.init then [ (index, Origin.Initializer) ] else [])
+        | index, Sparrow_cil.GVarDecl (variable, _) when not (Hashtbl.mem defined variable.vname) ->
+          [ (index, Origin.Storage) ]
+        | index, Sparrow_cil.GFun _ -> [ (index, Origin.Initializer) ]
+        | _ -> [])
+      globals
+
+let generate_global_chain ?(defined_extern_storage = true) globals fd =
+  Origin.seed fd.svar.vname Node.ENTRY Origin.Entry;
+  Origin.seed fd.svar.vname Node.EXIT Origin.Exit;
+  pending_global_provenance_rows := [];
+  completed_global_provenance_rows := [];
+  pending_construction_temps := [];
+  completed_construction_temp_rows := [];
+  next_construction_temp_id := 0;
+  active_construction_temp_owner := None;
+  Hashtbl.clear global_provenance_node_owners;
+  Hashtbl.clear global_provenance_decision_drops;
+  Hashtbl.clear construction_temp_node_events;
+  global_provenance_tracking_ready := !global_provenance_recording;
+  global_provenance_observing_current_cfg := !global_provenance_recording;
+  let global_index = ref (-1) in
+  let chain_index = ref (-1) in
+  let initializer_index = ref (-1) in
+  let provenance_owner = ref (-1) in
+  let item_metadata global =
+    incr global_index;
+    match global with
+    | Sparrow_cil.GVarDecl (variable, location) ->
+      incr chain_index;
+      Some
+        (!chain_index, None, variable.vname, Global_variable_declaration,
+         location)
+    | Sparrow_cil.GVar (variable, initinfo, location) ->
+      incr chain_index;
+      let initializer_slot =
+        match initinfo.init with
+        | None -> None
+        | Some _ ->
+          incr initializer_index;
+          Some !initializer_index
+      in
+      Some
+        (!chain_index, initializer_slot, variable.vname,
+         Global_variable_definition, location)
+    | Sparrow_cil.GFun (function_, location) ->
+      incr chain_index;
+      Some
+        (!chain_index, None, function_.svar.vname,
+         Global_function_definition, location)
+    | Sparrow_cil.GType _ | Sparrow_cil.GCompTag _
+    | Sparrow_cil.GCompTagDecl _ | Sparrow_cil.GEnumTag _
+    | Sparrow_cil.GEnumTagDecl _ | Sparrow_cil.GAsm _
+    | Sparrow_cil.GPragma _ | Sparrow_cil.GText _ -> None
+  in
+  (* (global, its index, its metadata), in chain order *)
+  let items =
+    List.map (fun global ->
+        let metadata = item_metadata global in
+        (global, !global_index, metadata)) globals
+  in
+  (* the next item index of a global: its nodes are numbered across both
+     parts of its construction *)
+  let next_item = Hashtbl.create 257 in
+  let emit (gidx, metadata) part build (node, g) =
+    let storage = part = Origin.Storage in
+    let before = g.graph in
+    let owner =
+      match metadata with
+      | None -> None
+      | Some (chain, initializer_slot, name, kind, location) ->
+        Some
+          { temp_owner_global_index = gidx;
+            temp_owner_chain_index = chain;
+            temp_owner_initializer_index = initializer_slot;
+            temp_owner_name = name;
+            temp_owner_kind = kind;
+            temp_owner_location = location }
+    in
+    let previous = !active_construction_temp_owner in
+    active_construction_temp_owner := owner;
+    let outer_journal = !vertex_journal in
+    let outer_open = !vertex_journal_open in
+    let journalled = ref [] in
+    vertex_journal := [];
+    vertex_journal_open := true;
+    let term, g =
+      Fun.protect
+        ~finally:(fun () ->
+            active_construction_temp_owner := previous;
+            journalled := !vertex_journal;
+            vertex_journal :=
+              if outer_open then List.rev_append !journalled outer_journal
+              else outer_journal;
+            vertex_journal_open := outer_open)
+        (fun () -> Origin.within fd.svar.vname (Origin.Global (gidx, part)) (fun () -> build node g))
+    in
+    (* the vertices [build] added: those of [g] not in [before] *)
+    let generated =
+      List.fold_left
+        (fun generated node ->
+           if G.mem_vertex g.graph node && not (G.mem_vertex before node)
+           then NodeSet.add node generated
+           else generated)
+        NodeSet.empty !journalled
+    in
+    (match metadata with
+     | Some (chain, initializer_slot, name, kind, location)
+       when !global_provenance_recording
+            && not (NodeSet.is_empty generated) ->
+       let first = Option.value (Hashtbl.find_opt next_item gidx) ~default:0 in
+       generated
+       |> NodeSet.elements
+       |> List.iteri (fun index generated_node ->
+              incr provenance_owner;
+              let owner = !provenance_owner in
+              pending_global_provenance_rows :=
+                { pending_owner = owner;
+                  pending_global_index = gidx;
+                  pending_chain_index = chain;
+                  pending_item_index = first + index;
+                  pending_initializer_index = initializer_slot;
+                  pending_name = name;
+                  pending_kind = kind;
+                  pending_location = location;
+                  pending_storage = storage }
+                :: !pending_global_provenance_rows;
+              global_provenance_assign [owner]
+                (NodeSet.singleton generated_node));
+       Hashtbl.replace next_item gidx (first + NodeSet.cardinal generated)
+     | Some _ | None -> ());
+    (term, g)
+  in
+  let items = Array.of_list items in
+  List.fold_left
+    (fun acc (gidx, part) ->
+       let global, _, metadata = items.(gidx) in
+       let emit = emit (gidx, metadata) part in
+       match global, part with
+       | Sparrow_cil.GVar (variable, _, location), Origin.Storage
+       | Sparrow_cil.GVarDecl (variable, location), _ ->
+         emit (fun node g -> process_gvardecl fd (Sparrow_cil.var variable) location node g) acc
+       | Sparrow_cil.GVar (variable, { init = Some init }, location), Origin.Initializer ->
+         emit (fun node g -> process_init fd (Sparrow_cil.var variable) init location node g) acc
+       | Sparrow_cil.GFun (function_, location), _ ->
+         emit (fun node g -> process_fundecl fd function_ location node g) acc
+       | _ -> acc)
+    (Node.ENTRY, empty fd)
+    (global_constructions ~whole_program:(not defined_extern_storage) globals)
+
+let generate_global_proc : Sparrow_cil.global list -> Sparrow_cil.fundec -> t
 = fun globals fd ->
-  let entry = Node.ENTRY in
-  let (term, g) =
-    List.fold_left (fun (node, g) x ->
-        match x with
-          Cil.GVar (var, init, loc) ->
-          process_gvar fd (Cil.var var) init loc node g
-        | Cil.GVarDecl (var, loc) -> process_gvardecl fd (Cil.var var) loc node g
-        | Cil.GFun (fundec, loc) -> process_fundecl fd fundec loc node g
-        | _ -> (node, g)) (entry, empty fd) globals
+  let term, g = generate_global_chain ~defined_extern_storage:false globals fd in
+  let finish g =
+    g
+    |> generate_assumes
+    |> flatten_instructions
+    |> remove_if_loop
+    |> transform_string_allocs fd        (* generate salloc (string alloc) cmds *)
+    |> remove_empty_nodes
+    |> insert_return_nodes
   in
   let (main_dec, main_loc) =
     match get_main_dec globals with
     | Some (d, l) -> (d, l)
     | _ -> prerr_endline ("Error: main not Found"); exit 1
   in
-  let call_node = Node.make () in
+  let call_node = Origin.within fd.svar.vname Origin.Main (fun () -> Origin.derive Origin.Main_call) in
   let call_cmd = Cmd.Ccall (None, Lval (Var main_dec.svar, NoOffset), [], main_loc) in
-  g
-  |> add_cmd call_node call_cmd
-  |> add_edge term call_node
-  |> add_edge call_node Node.EXIT
-  |> generate_assumes
-  |> flatten_instructions
-  |> remove_if_loop
-  |> transform_string_allocs fd        (* generate salloc (string alloc) cmds *)
-  |> remove_empty_nodes
-  |> insert_return_nodes
+  let result =
+    g
+    |> add_cmd call_node call_cmd
+    |> add_edge term call_node
+    |> add_edge call_node Node.EXIT
+    |> finish
+  in
+  global_provenance_observing_current_cfg := false;
+  result
+
+let generate_module_global_proc : Sparrow_cil.global list -> Sparrow_cil.fundec -> t
+= fun globals fd ->
+  let term, g = generate_global_chain globals fd in
+  let result =
+    g
+    |> add_edge term Node.EXIT
+    |> generate_assumes
+    |> flatten_instructions
+    |> remove_if_loop
+    |> transform_string_allocs fd
+    |> remove_empty_nodes
+    |> insert_return_nodes
+  in
+  global_provenance_observing_current_cfg := false;
+  result
 
 let unreachable_node : t -> NodeSet.t
 =fun g ->
@@ -874,71 +1755,310 @@ let unreachable_node : t -> NodeSet.t
   remove_reachable_node' (NodeSet.singleton Node.ENTRY) all_nodes
 
 let merge_vertex g vl =
-  { g with graph = Merge.merge_vertex g.graph vl }
-  |> remove_edge (List.hd vl) (List.hd vl)
+  let replacement = List.hd vl in
+  let replacement_existed = G.mem_vertex g.graph replacement in
+  let overwritten_owners = global_provenance_owners replacement in
+  let source_owners =
+    List.tl vl
+    |> List.concat_map global_provenance_owners
+    |> List.sort_uniq Int.compare
+  in
+  let source_temp_events =
+    vl |> List.concat_map construction_temp_events
+    |> List.sort_uniq Int.compare
+  in
+  let lost_owners =
+    if replacement_existed then
+      List.filter (fun owner -> not (List.mem owner source_owners))
+        overwritten_owners
+    else []
+  in
+  let result =
+    { g with graph = Merge.merge_vertex g.graph vl }
+    |> remove_edge replacement replacement
+  in
+  if !global_provenance_recording && !global_provenance_tracking_ready
+     && !global_provenance_observing_current_cfg
+  then begin
+    global_provenance_remove (NodeSet.of_list vl);
+    global_provenance_assign source_owners (NodeSet.singleton replacement);
+    construction_temp_assign source_temp_events
+      (NodeSet.singleton replacement);
+    global_provenance_record_drop lost_owners replacement
+      "node-id-collision-overwrite"
+  end;
+  result
 
 let rec collect g n lval node_list exp_list =
-  let s = succ n g |> List.hd in
-  match (find_cmd n g, find_cmd s g) with
+  match succ n g with
+  | [s] ->
+  (match (find_cmd n g, find_cmd s g) with
     Cmd.Csalloc (_, str, _), Cmd.Cset (l, e, _) ->
     begin
-      match Cil.removeOffsetLval l with
-        (l, Cil.Index (i, Cil.NoOffset)) when CilHelper.eq_lval lval l && Cil.isConstant i ->
-          let node_list, exp_list = n::s::node_list, (Cil.mkString str)::exp_list in
+      match Sparrow_cil.removeOffsetLval l with
+        (l, Sparrow_cil.Index (i, Sparrow_cil.NoOffset)) when CilHelper.eq_lval lval l && Sparrow_cil.isConstant i ->
+          let node_list, exp_list = n::s::node_list, (Sparrow_cil.mkString str)::exp_list in
           let ss = succ s g in
           if List.length ss = 1 then collect g (List.hd ss) lval node_list exp_list
           else (node_list, exp_list)
       | _ -> (node_list, exp_list)
     end
-  | Cmd.Cset (l, e, _), _ when Cil.isConstant e ->
+  | Cmd.Cset (l, e, _), _ when Sparrow_cil.isConstant e ->
     begin
-      match Cil.removeOffsetLval l with
-        (l, Cil.Index (i, Cil.NoOffset)) when CilHelper.eq_lval lval l && Cil.isConstant i ->
+      match Sparrow_cil.removeOffsetLval l with
+        (l, Sparrow_cil.Index (i, Sparrow_cil.NoOffset)) when CilHelper.eq_lval lval l && Sparrow_cil.isConstant i ->
           let node_list, exp_list = n::node_list, e::exp_list in
           let ss = succ n g in
           if List.length ss = 1 then collect g (List.hd ss) lval node_list exp_list
           else (node_list, exp_list)
       | _ -> (node_list, exp_list)
     end
+  | _ -> (node_list, exp_list))
   | _ -> (node_list, exp_list)
 
 let is_candidate n g =
   let is_starting_point lval =
-    match Cil.removeOffsetLval lval with
-      (l, Cil.Index (i, Cil.NoOffset)) when Cil.isZero i -> Some l
+    match Sparrow_cil.removeOffsetLval lval with
+      (l, Sparrow_cil.Index (i, Sparrow_cil.NoOffset)) when Sparrow_cil.isZero i -> Some l
     | _ -> None
   in
   let ss = try succ n g with _ -> [] in
   if List.length ss = 1 then
     let s = List.hd ss in
     match find_cmd n g, find_cmd s g with
-      Cmd.Csalloc (_, _, _), Cmd.Cset (lval, e, _) when Cil.isPointerType (Cil.typeOf e) ->
+      Cmd.Csalloc (_, _, _), Cmd.Cset (lval, e, _) when Sparrow_cil.isPointerType (Sparrow_cil.typeOf e) ->
         is_starting_point lval
-    | Cmd.Cset (lval, e, _), _ when Cil.isIntegralType (Cil.typeOf e) ->
+    | Cmd.Cset (lval, e, _), _ when Sparrow_cil.isIntegralType (Sparrow_cil.typeOf e) ->
         is_starting_point lval
     | _ -> None
   else None
 
 (* arr[0] = c0; arr[1] = c1; ..., arr[n] = cn; => sparrow_array_init(arr,c0, c1, ..., cn);
    salloc(arr[0], x0); x0 = s0; ..., => sparrow_array_init(arr, s0, s1, ..., sn) *)
-let optimize_array_init : t -> t
+let rec make_replacement_node g replaced =
+  let node = Origin.derive Origin.Replacement in
+  if G.mem_vertex g.graph node && not (List.mem node replaced) then
+    make_replacement_node g replaced
+  else node
+
+let optimize_array_init_with make_node : t -> t
 = fun g ->
-  fold_node (fun n g ->
+  fold_node (fun n g -> Origin.from (get_pid g) n @@ fun () ->
       match is_candidate n g with
         Some lval ->
           let (nodes, exps) = collect g n lval [] [] in
           if List.length nodes > 1 then
-            let new_node = Node.make () in
+            let new_node = make_node g nodes in
             let g = merge_vertex g (new_node::nodes) in
-            let args = (Cil.Lval lval)::(List.rev exps) in
+            let args = (Sparrow_cil.Lval lval)::(List.rev exps) in
             let loc = find_cmd n g |> Cmd.location_of in
-            let cmd = Cmd.Ccall (None, Cil.Lval (Cil.Var (Cil.makeGlobalVar "sparrow_array_init" Cil.voidType), Cil.NoOffset), args, loc) in
+            let cmd = Cmd.Ccall (None, Sparrow_cil.Lval (Sparrow_cil.Var (Sparrow_cil.makeGlobalVar "sparrow_array_init" Sparrow_cil.voidType), Sparrow_cil.NoOffset), args, loc) in
             add_cmd new_node cmd g
           else g
       | _ -> g) g g
 
-let optimize : t -> t
-= fun g -> optimize_array_init g
+let optimize_with optimize_array_init : t -> t
+= fun g ->
+  if get_pid g = "_G_" && !global_provenance_tracking_ready then begin
+    global_provenance_observing_current_cfg := true;
+    Fun.protect
+      ~finally:(fun () -> global_provenance_observing_current_cfg := false)
+      (fun () -> optimize_array_init g)
+  end else optimize_array_init g
+
+let collision_safe_global_replacement = ref false
+
+let with_collision_safe_global_replacement f =
+  let previous = !collision_safe_global_replacement in
+  collision_safe_global_replacement := true;
+  Fun.protect
+    ~finally:(fun () -> collision_safe_global_replacement := previous)
+    f
+
+let optimize g =
+  let optimize_array_init =
+    if !collision_safe_global_replacement && get_pid g = "_G_" then
+      optimize_array_init_with make_replacement_node
+    else optimize_array_init_with (fun _ _ -> Origin.derive Origin.Array_init)
+  in
+  optimize_with optimize_array_init g
+
+let finish_global_provenance ~unreachable g =
+  if not !global_provenance_recording then begin
+    completed_global_provenance_rows := [];
+    completed_construction_temp_rows := [];
+    global_provenance_tracking_ready := false
+  end else begin
+    let graph_nodes = NodeSet.of_list (nodesof g) in
+    let reachable_order =
+      let rec visit seen order = function
+        | [] -> List.rev order
+        | node :: rest when NodeSet.mem node seen -> visit seen order rest
+        | node :: rest ->
+          let seen = NodeSet.add node seen in
+          let successors = succ node g |> List.sort Node.compare in
+          visit seen (node :: order) (successors @ rest)
+      in
+      visit NodeSet.empty [] [Node.ENTRY]
+    in
+    let rank = Hashtbl.create (max 17 (List.length reachable_order * 2)) in
+    List.iteri (fun index node -> Hashtbl.replace rank node index)
+      reachable_order;
+    let compare_chain_node left right =
+      match Hashtbl.find_opt rank left, Hashtbl.find_opt rank right with
+      | Some left, Some right -> Int.compare left right
+      | Some _, None -> -1
+      | None, Some _ -> 1
+      | None, None -> Node.compare left right
+    in
+    (* key -> the graph nodes whose key list holds it, built once: the same
+       node set as scanning the whole table per key, and [compare_chain_node]
+       is a total order, so the sorted lists are the same *)
+    let index_by_key table =
+      let index = Hashtbl.create 1024 in
+      Hashtbl.iter
+        (fun node keys ->
+           if NodeSet.mem node graph_nodes then
+             List.iter
+               (fun key ->
+                  Hashtbl.replace index key
+                    (node :: Option.value (Hashtbl.find_opt index key) ~default:[]))
+               keys)
+        table;
+      fun key ->
+        Option.value (Hashtbl.find_opt index key) ~default:[]
+        |> List.sort_uniq compare_chain_node
+    in
+    let nodes_for = index_by_key global_provenance_node_owners in
+    completed_global_provenance_rows :=
+      !pending_global_provenance_rows
+      |> List.rev
+      |> List.map (fun pending ->
+             let owned_nodes = nodes_for pending.pending_owner in
+             let unreachable_nodes, retained =
+               List.partition (fun node -> NodeSet.mem node unreachable)
+                 owned_nodes
+             in
+             let decision_drops =
+               Option.value
+                 (Hashtbl.find_opt global_provenance_decision_drops
+                    pending.pending_owner)
+                 ~default:[]
+             in
+             let dropped =
+               unreachable_nodes @ List.map fst decision_drops
+               |> List.sort_uniq compare_chain_node
+             in
+             let pretrim =
+               owned_nodes @ List.map fst decision_drops
+               |> List.sort_uniq compare_chain_node
+             in
+             let drop_mechanisms =
+               (if unreachable_nodes = [] then []
+                else [ "unreachable-node-trim" ])
+               @ List.map snd decision_drops
+               |> List.sort_uniq String.compare
+             in
+             { global_provenance_global_index = pending.pending_global_index;
+               global_provenance_chain_index = pending.pending_chain_index;
+               global_provenance_item_index = pending.pending_item_index;
+               global_provenance_initializer_index =
+                 pending.pending_initializer_index;
+               global_provenance_name = pending.pending_name;
+               global_provenance_kind = pending.pending_kind;
+               global_provenance_location = pending.pending_location;
+               global_provenance_pretrim_nodes = pretrim;
+               global_provenance_dropped_nodes = dropped;
+               global_provenance_drop_mechanisms = drop_mechanisms;
+               global_provenance_outcome =
+                 if retained = [] then Global_cfg_dropped
+                 else Global_chain_nodes retained;
+               global_provenance_storage = pending.pending_storage })
+      |> List.filter (fun row ->
+             row.global_provenance_pretrim_nodes <> []);
+    let nodes_for_temp = index_by_key construction_temp_node_events in
+    let temporary_destination node =
+      let temporary_name lvalue =
+        match lvalue with
+        | Sparrow_cil.Var variable, Sparrow_cil.NoOffset
+          when String.length variable.Sparrow_cil.vname > 9
+               && String.sub variable.Sparrow_cil.vname 0 9 = "__cil_tmp" ->
+          Some variable.Sparrow_cil.vname
+        | _ -> None
+      in
+      match find_cmd node g with
+      | Cmd.Cset (lvalue, _, _) | Cmd.Cexternal (lvalue, _)
+      | Cmd.Calloc (lvalue, _, _, _) | Cmd.Csalloc (lvalue, _, _)
+      | Cmd.Cfalloc (lvalue, _, _) -> temporary_name lvalue
+      | Cmd.Ccall (Some lvalue, _, _, _) -> temporary_name lvalue
+      | Cmd.Cinstr _ | Cmd.Cif _ | Cmd.CLoop _ | Cmd.Cassume _
+      | Cmd.Ccall (None, _, _, _) | Cmd.Creturn _ | Cmd.Casm _
+      | Cmd.Cskip -> None
+    in
+    completed_construction_temp_rows :=
+      !pending_construction_temps
+      |> List.rev
+      |> List.map (fun pending ->
+             let mapped = nodes_for_temp pending.pending_temp_id in
+             let retained =
+               List.filter (fun node -> not (NodeSet.mem node unreachable))
+                 mapped
+             in
+             let survived =
+               retained |> List.filter_map temporary_destination
+               |> List.sort_uniq String.compare
+             in
+             let owner = pending.pending_temp_owner in
+             { construction_temp_owner_global_index =
+                 owner.temp_owner_global_index;
+               construction_temp_owner_chain_index =
+                 owner.temp_owner_chain_index;
+               construction_temp_owner_initializer_index =
+                 owner.temp_owner_initializer_index;
+               construction_temp_owner_name = owner.temp_owner_name;
+               construction_temp_owner_kind = owner.temp_owner_kind;
+               construction_temp_owner_location = owner.temp_owner_location;
+               construction_temp_initializer_or_type_path =
+                 pending.pending_temp_initializer_or_type_path;
+               construction_temp_expression_child_path =
+                 pending.pending_temp_expression_child_path;
+               construction_temp_generation_role =
+                 pending.pending_temp_generation_role;
+               construction_temp_type_preimage =
+                 pending.pending_temp_type_preimage;
+               construction_temp_payload_preimage =
+                 pending.pending_temp_payload_preimage;
+               construction_temp_final_name =
+                 (match survived with
+                  | [ name ] -> name
+                  | _ ->
+                    (match pending.pending_temp_varinfo with
+                     | Some variable -> variable.Sparrow_cil.vname
+                     | None -> pending.pending_temp_initial_name));
+               construction_temp_pretrim_nodes =
+                 List.sort_uniq compare_chain_node
+                   (pending.pending_temp_original_nodes @ mapped);
+               construction_temp_outcome =
+                 if retained = [] then Construction_temp_dropped
+                 else if List.length survived = 1 then
+                   Construction_temp_survives retained
+                 else Construction_temp_absorbed_by retained })
+      |> List.sort (fun left right ->
+             compare
+               (left.construction_temp_owner_global_index,
+                left.construction_temp_initializer_or_type_path,
+                string_of_construction_temp_generation_role
+                  left.construction_temp_generation_role,
+                left.construction_temp_expression_child_path,
+                left.construction_temp_final_name)
+               (right.construction_temp_owner_global_index,
+                right.construction_temp_initializer_or_type_path,
+                string_of_construction_temp_generation_role
+                  right.construction_temp_generation_role,
+                right.construction_temp_expression_child_path,
+                right.construction_temp_final_name));
+    global_provenance_tracking_ready := false
+  end
 
 let print_dot : out_channel -> t -> unit
 =fun chan g ->
@@ -974,7 +2094,7 @@ let print_dom_tree dom_tree =
 
 module Json = Yojson.Safe
 
-let to_json : t -> Json.json
+let to_json : t -> Json.t
 = fun g ->
   let nodes = `Assoc (G.fold_vertex (fun v nodes ->
               (Node.to_string v,

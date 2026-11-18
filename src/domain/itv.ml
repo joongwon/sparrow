@@ -14,7 +14,8 @@ open Vocab
  * Widening threshold *
  * ****************** *)
 
-let threshold = BatSet.of_list [0;1;16;64]
+(* The threshold set is the -widen_thresholds setting (Options). *)
+let threshold () = !Options.widen_thresholds
 
 
 (* ************************ *
@@ -62,7 +63,7 @@ struct
   let lower_widen : t -> t -> t = fun x y ->
     if le y x then
       if eq y x then y else
-        let filtered = BatSet.filter (fun k -> le (Int k) y) threshold in
+        let filtered = BatSet.filter (fun k -> le (Int k) y) (threshold ()) in
         if BatSet.is_empty filtered
         then MInf else Int (BatSet.max_elt filtered)
     else x
@@ -70,20 +71,20 @@ struct
   let upper_widen : t -> t -> t = fun x y ->
     if le x y then
       if eq x y then y else
-        let filtered = BatSet.filter (fun k -> le y (Int k)) threshold in
+        let filtered = BatSet.filter (fun k -> le y (Int k)) (threshold ()) in
         if BatSet.is_empty filtered
       then PInf else Int (BatSet.min_elt filtered)
     else x
 
   let lower_narrow : t -> t -> t = fun x y ->
     if le x y then
-      if eq x MInf || BatSet.exists (fun k -> x = Int k) threshold then y
+      if eq x MInf || BatSet.exists (fun k -> x = Int k) (threshold ()) then y
       else x
     else invalid_arg ("itv.ml: Integer.lower_narrow (x, y). y < x : "^(to_string y)^" < "^(to_string x))
 
   let upper_narrow : t -> t -> t = fun x y ->
     if le y x then
-      if eq x PInf || BatSet.exists (fun k -> x = Int k) threshold then y
+      if eq x PInf || BatSet.exists (fun k -> x = Int k) (threshold ()) then y
       else x
     else invalid_arg "itv.ml: Integer.upper_narrow (x, y). x < y"
 
@@ -177,7 +178,7 @@ let pp fmt = function
   | Bot -> Format.fprintf fmt "bot"
   | V (l, u) -> Format.fprintf fmt "[%a, %a]" Integer.pp l Integer.pp u
 
-let to_json : t -> Yojson.Safe.json = fun itv ->
+let to_json : t -> Yojson.Safe.t = fun itv ->
   `String (to_string itv)
 
 let is_bot : t -> bool = function
@@ -188,6 +189,15 @@ let is_bot : t -> bool = function
 (** Normalizes invalid intervals such as [\[u, l\]] with [u > l] to
     [Bot].*)
 let normalize x = if is_bot x then Bot else x
+
+(* Hash-cons intervals (the leaf abstract value): each distinct interval
+   becomes one physical object shared across all node memories, so two
+   memories differing in one location still share every common interval.
+   The table is global and never cleared. *)
+let table = Hashtbl.create 251
+let hashcons x =
+  try Hashtbl.find table x with
+    Not_found -> Hashtbl.add table x x; x
 
 let absolute = function
   | Bot -> Bot
@@ -212,7 +222,7 @@ let eq : t -> t -> bool = fun x y ->
     | _, _ -> assert false
 
 
-let top : t = V (MInf, PInf)
+let top : t = hashcons (V (MInf, PInf))
 let bot : t = Bot
 
 
@@ -222,7 +232,7 @@ let join : t -> t -> t = fun x y ->
   if is_bot x then normalize y else
   if is_bot y then normalize x else
     match x, y with
-    | V (l1, u1), V (l2, u2) -> V (Integer.min l1 l2, Integer.max u1 u2)
+    | V (l1, u1), V (l2, u2) -> hashcons (V (Integer.min l1 l2, Integer.max u1 u2))
     | _, _ -> assert false
 
 
@@ -233,7 +243,7 @@ let meet : t -> t -> t = fun x y ->
   if is_bot y then Bot else
     match x, y with
     | V (l1, u1), V (l2, u2) ->
-      normalize (V (Integer.max l1 l2, Integer.min u1 u2))
+      hashcons (normalize (V (Integer.max l1 l2, Integer.min u1 u2)))
     | _, _ -> assert false
 
 
@@ -243,7 +253,7 @@ let widen : t -> t -> t = fun x y ->
   if is_bot y then normalize x else
     match x, y with
     | V (l1, u1), V (l2, u2) ->
-      V (Integer.lower_widen l1 l2, Integer.upper_widen u1 u2)
+      hashcons (V (Integer.lower_widen l1 l2, Integer.upper_widen u1 u2))
     | _, _ -> assert false
 
 
@@ -253,7 +263,7 @@ let narrow : t -> t -> t = fun x y ->
   if is_bot x then invalid_arg "itv.ml: narrow(bot, _)" else
     match x, y with
     | V (l1, u1), V (l2, u2) ->
-      V (Integer.lower_narrow l1 l2, Integer.upper_narrow u1 u2)
+      hashcons (V (Integer.lower_narrow l1 l2, Integer.upper_narrow u1 u2))
     | _, _ -> assert false
 
 
@@ -322,13 +332,13 @@ let diff (x:t) : int =
 let plus (x:t) (y:t) : t =
   if is_bot x || is_bot y then Bot else
     match x, y with
-    | V (l1, u1), V (l2, u2) -> V (Integer.plus l1 l2, Integer.plus u1 u2)
+    | V (l1, u1), V (l2, u2) -> hashcons (V (Integer.plus l1 l2, Integer.plus u1 u2))
     | _, _ -> assert false
 
 let minus (x:t) (y:t) : t =
   if is_bot x || is_bot y then Bot else
     match x, y with
-    | V (l1, u1), V (l2, u2) -> V (Integer.minus l1 u2, Integer.minus u1 l2)
+    | V (l1, u1), V (l2, u2) -> hashcons (V (Integer.minus l1 u2, Integer.minus u1 l2))
     | _, _ -> assert false
 
 let times (x:t) (y:t) : t =
@@ -339,7 +349,7 @@ let times (x:t) (y:t) : t =
       let x2 = Integer.times l1 u2 in
       let x3 = Integer.times u1 l2 in
       let x4 = Integer.times u1 u2 in
-      V (Integer.min4 x1 x2 x3 x4, Integer.max4 x1 x2 x3 x4)
+      hashcons (V (Integer.min4 x1 x2 x3 x4, Integer.max4 x1 x2 x3 x4))
     | _, _ -> assert false
 
 let divide (x:t) (y:t) : t =
@@ -351,12 +361,12 @@ let divide (x:t) (y:t) : t =
       let x2 = Integer.divide l1 u2 in
       let x3 = Integer.divide u1 l2 in
       let x4 = Integer.divide u1 u2 in
-      V (Integer.min4 x1 x2 x3 x4, Integer.max4 x1 x2 x3 x4)
+      hashcons (V (Integer.min4 x1 x2 x3 x4, Integer.max4 x1 x2 x3 x4))
     | _, _ -> assert false
 
-let false_itv : t = V (Int 0, Int 0)
-let true_itv : t = V (Int 1, Int 1)
-let unknown_bool_itv : t = V (Int 0, Int 1)
+let false_itv : t = hashcons (V (Int 0, Int 0))
+let true_itv : t = hashcons (V (Int 1, Int 1))
+let unknown_bool_itv : t = hashcons (V (Int 0, Int 1))
 
 let l_and (x:t) (y:t) : t =
   if is_bot x || is_bot y then
@@ -439,18 +449,18 @@ let l_shift (x:t) (y:t) : t =
       V (Int x, Int x)
   | _ -> unknown_binary x y
 
-let itv_of_type : Cil.typ -> t = function
-  | Cil.TInt (Cil.IUChar, _) -> of_ints 0 255
-  | Cil.TInt (Cil.IUShort, _) -> of_ints 0 65535
-  | Cil.TInt (Cil.IUInt, _) | Cil.TInt (Cil.ILong, _)
-  | Cil.TInt (Cil.IULongLong, _) -> of_ints 0 4294967295
-  | Cil.TInt (Cil.IChar, _) -> of_ints (-128) 255
-  | Cil.TInt (Cil.IShort, _) -> of_ints (-32768) 32767
-  | Cil.TInt (Cil.IInt, _) | Cil.TInt (Cil.IULong, _)
-  | Cil.TInt (Cil.ILongLong, _) -> of_ints (-2147483648) 2147483648
+let itv_of_type : Sparrow_cil.typ -> t = function
+  | Sparrow_cil.TInt (Sparrow_cil.IUChar, _) -> of_ints 0 255
+  | Sparrow_cil.TInt (Sparrow_cil.IUShort, _) -> of_ints 0 65535
+  | Sparrow_cil.TInt (Sparrow_cil.IUInt, _) | Sparrow_cil.TInt (Sparrow_cil.ILong, _)
+  | Sparrow_cil.TInt (Sparrow_cil.IULongLong, _) -> of_ints 0 4294967295
+  | Sparrow_cil.TInt (Sparrow_cil.IChar, _) -> of_ints (-128) 255
+  | Sparrow_cil.TInt (Sparrow_cil.IShort, _) -> of_ints (-32768) 32767
+  | Sparrow_cil.TInt (Sparrow_cil.IInt, _) | Sparrow_cil.TInt (Sparrow_cil.IULong, _)
+  | Sparrow_cil.TInt (Sparrow_cil.ILongLong, _) -> of_ints (-2147483648) 2147483648
   | _ -> top
 
-let cast : Cil.typ -> Cil.typ -> t -> t
+let cast : Sparrow_cil.typ -> Sparrow_cil.typ -> t -> t
 = fun from_typ to_typ itv ->
   if !Options.int_overflow then
   begin
@@ -484,19 +494,19 @@ let cast : Cil.typ -> Cil.typ -> t -> t
     else itv
   end
 
-let prune : Cil.binop -> t -> t -> t = fun op x y ->
+let prune : Sparrow_cil.binop -> t -> t -> t = fun op x y ->
   if is_bot x || is_bot y then Bot else
     let pruned =
       match op, x, y with
-      | Cil.Lt, V (a, b), V (c, d) -> V (a, Integer.min b (Integer.minus d (Int 1)))
-      | Cil.Gt, V (a, b), V (c, d) -> V (Integer.max a (Integer.plus c (Int 1)), b)
-      | Cil.Le, V (a, b), V (c, d) -> V (a, Integer.min b d)
-      | Cil.Ge, V (a, b), V (c, d) -> V (Integer.max a c, b)
-      | Cil.Eq, V (a, b), V (c, d) -> meet x y
-      | Cil.Ne, V (a, b), V (c, d) when Integer.eq b c && Integer.eq c d ->
+      | Sparrow_cil.Lt, V (a, b), V (c, d) -> V (a, Integer.min b (Integer.minus d (Int 1)))
+      | Sparrow_cil.Gt, V (a, b), V (c, d) -> V (Integer.max a (Integer.plus c (Int 1)), b)
+      | Sparrow_cil.Le, V (a, b), V (c, d) -> V (a, Integer.min b d)
+      | Sparrow_cil.Ge, V (a, b), V (c, d) -> V (Integer.max a c, b)
+      | Sparrow_cil.Eq, V (a, b), V (c, d) -> meet x y
+      | Sparrow_cil.Ne, V (a, b), V (c, d) when Integer.eq b c && Integer.eq c d ->
         V (a, Integer.minus b (Int 1))
-      | Cil.Ne, V (a, b), V (c, d) when Integer.eq a c && Integer.eq c d ->
+      | Sparrow_cil.Ne, V (a, b), V (c, d) when Integer.eq a c && Integer.eq c d ->
         V (Integer.plus a (Int 1), b)
-      | Cil.Ne, V _, V _ -> x
+      | Sparrow_cil.Ne, V _, V _ -> x
       | _ -> invalid_arg "itv.ml:prune" in
-    normalize pruned
+    hashcons (normalize pruned)

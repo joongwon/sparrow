@@ -31,11 +31,25 @@ val global_proc : Proc.t
 (** Starting point of program *)
 val start_node : node
 
-val init : Cil.file -> t
+val init : Sparrow_cil.file -> t
+
+(** module (translation-unit) variant of [init]: the global proc only
+    initializes globals and does not call main, so a main-less library
+    module still yields a complete InterCfg *)
+val init_module : Sparrow_cil.file -> t
+
+(** stable (function-local) node ids: a function's node ids and
+    allocation-site identities depend only on its own body *)
+val init_module_stable : Sparrow_cil.file -> t
 
 val cfgof : t -> pid -> IntraCfg.t
-val argsof : t -> pid -> Cil.varinfo list
+val argsof : t -> pid -> Sparrow_cil.varinfo list
 val cmdof : t -> Node.t -> IntraCfg.cmd
+val add_cmd : t -> Node.t -> IntraCfg.cmd -> t
+
+val add_cfg : pid -> IntraCfg.t -> t -> t
+val mem_cfg : pid -> t -> bool
+val compute_dom_and_scc : t -> t
 
 val pidsof : t -> pid list
 val nodesof : t -> Node.t list
@@ -68,4 +82,6 @@ val nodes_of_pid : t -> pid -> Node.t list
 
 (** {2 Print } *)
 
-val to_json : t -> Yojson.Safe.json
+val to_json : t -> Yojson.Safe.t
+
+val dummy : t

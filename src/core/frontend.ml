@@ -8,11 +8,11 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-open Cil
+open Sparrow_cil
 open Vocab
 open Global
 
-module C = Cil
+module C = Sparrow_cil
 module F = Frontc
 module E = Errormsg
 
@@ -34,12 +34,16 @@ let args : string -> unit
 
 let parseOneFile : string -> C.file
 = fun fname ->
+  FrontendPolicy.configure_cil ();
   (* PARSE and convert to CIL *)
   if !Cilutil.printStages then ignore (E.log "Parsing %s\n" fname);
+  SourceName.clear ();
+  let finish cil =
+    if not (Feature.enabled "epicenter") then (
+      (Rmtmps.removeUnusedTemps cil)
+    ) in
   let cil = F.parse fname () in
-  if not (Feature.enabled "epicenter") then (
-    (Rmtmps.removeUnusedTemps cil)
-  );
+  finish cil;
   cil
 
 let parse : unit -> C.file
@@ -52,24 +56,25 @@ let parse : unit -> C.file
     let merged = Stats.time "merge" (Mergecil.merge files) "merged" in
       if !E.hadErrors then
         E.s (E.error "There were errors during merging");
+      SourceName.install_from_merge ();
       merged
 
-let makeCFGinfo : Cil.file -> Cil.file
+let makeCFGinfo : Sparrow_cil.file -> Sparrow_cil.file
 =fun f ->
   ignore (Partial.calls_end_basic_blocks f) ;
   ignore (Partial.globally_unique_vids f) ;
-  Cil.iterGlobals f (fun glob -> match glob with
-    Cil.GFun(fd,_) ->
-                  Cil.prepareCFG fd ;
+  Sparrow_cil.iterGlobals f (fun glob -> match glob with
+    Sparrow_cil.GFun(fd,_) ->
+                  Sparrow_cil.prepareCFG fd ;
                   (* jc: blockinggraph depends on this "true" arg *)
-                  ignore (Cil.computeCFGInfo fd true)
+                  ignore (Sparrow_cil.computeCFGInfo fd true)
   | _ -> ());
   f
 
 (* true if the given function has variable number of arguments *)
-let is_varargs : string -> Cil.file -> bool
+let is_varargs : string -> Sparrow_cil.file -> bool
 =fun fid file ->
-  Cil.foldGlobals file (fun b global ->
+  Sparrow_cil.foldGlobals file (fun b global ->
     match global with
     | GFun (fd,_) when fd.svar.vname = fid ->
         (match fd.svar.vtype with

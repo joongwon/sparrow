@@ -9,7 +9,7 @@
 (*                                                                     *)
 (***********************************************************************)
 open Graph
-open Cil
+open Sparrow_cil
 open Global
 open AbsDom
 open Vocab
@@ -152,7 +152,7 @@ let add_return lvo feat =
 let add_return_int pid lvo cfg feat =
   match lvo with
     Some x ->
-    { feat with return_int = (Cil.isIntegralType (Cil.typeOf (Cil.Lval x))) }
+    { feat with return_int = (Sparrow_cil.isIntegralType (Sparrow_cil.typeOf (Sparrow_cil.Lval x))) }
   | _ -> feat
 
 let sem_fun = ItvSem.run AbsSem.Strong ItvSem.Spec.empty
@@ -291,10 +291,10 @@ let lib_feature global cfg trset =
   let scc_list = IntraCfg.get_scc_list cfg |> List.filter (fun x -> List.length x > 1) in
   IntraCfg.fold_node (fun intra_node trset ->
     match IntraCfg.find_cmd intra_node cfg with
-      IntraCfg.Cmd.Ccall (lvo, Cil.Lval (Cil.Var f, Cil.NoOffset), exps, loc)
+      IntraCfg.Cmd.Ccall (lvo, Sparrow_cil.Lval (Sparrow_cil.Var f, Sparrow_cil.NoOffset), exps, loc)
       when Global.is_undef f.vname global &&
-           not (List.mem f.vname ignore_libs) -> (* undefined library functions *)
-        let libid = (CilHelper.s_location loc)^":"^f.vname in
+           not (List.mem (SourceName.of_varinfo f) ignore_libs) -> (* undefined library functions *)
+        let libid = (CilHelper.s_location loc)^":"^SourceName.of_varinfo f in
         let pid = IntraCfg.get_pid cfg in
         let node = InterCfg.Node.make pid intra_node in
         let feat = empty_feature
@@ -332,9 +332,9 @@ let normalize trset =
 
 let extract_feature : Global.t -> data
 = fun global ->
-  let trset = Cil.foldGlobals global.file (fun trset glob ->
+  let trset = Sparrow_cil.foldGlobals global.file (fun trset glob ->
     match glob with
-      Cil.GFun (fd, _) ->
+      Sparrow_cil.GFun (fd, _) ->
         (try
           let cfg = InterCfg.cfgof global.icfg fd.svar.vname in
           lib_feature global cfg trset
@@ -357,17 +357,21 @@ let get_harmless_libs : Global.t -> lib BatSet.t
     let data = extract_feature global in
     let sparrow_bin_path = Unix.getenv "SPARROW_BIN_PATH" in
     let sparrow_data_path = Unix.getenv "SPARROW_DATA_PATH" in
-    let py = Lymp.init ~exec:"python2" sparrow_bin_path in
-    let py_module = Lymp.get_module py "harmless_unsoundness" in
-    let classifier = Lymp.Pyref (Lymp.get_ref py_module "load" [Lymp.Pystr (sparrow_data_path ^ "/harmless_lib_clf")]) in
+    let library_name = Sys.getenv_opt "PYML_LIBRARY" in
+    if not (Py.is_initialized ()) then Py.initialize ?library_name ~verbose:!Options.debug ();
+    let sys = Py.import "sys" in
+    let _ = Py.Module.get sys "path" |> (fun p -> Py.Object.call_method p "append" [| Py.String.of_string sparrow_bin_path |]) in
+    let py_module = Py.import "harmless_unsoundness" in
+    let load = Py.Module.get py_module "load" in
+    let classifier = Py.Callable.to_function load [| Py.String.of_string (sparrow_data_path ^ "/harmless_lib_clf") |] in
+    let is_harmless = Py.Module.get py_module "is_harmless" in
     let set = BatMap.foldi (fun l fvec loops ->
         let vec = feature_vector_of fvec in
-        let vec = Lymp.Pylist (List.map (fun x -> Lymp.Pyfloat x) vec) in
-        let b = Lymp.get_bool py_module "is_harmless" [classifier; vec] in
+        let py_vec = Py.List.of_list (List.map Py.Float.of_float vec) in
+        let b = Py.Bool.to_bool (Py.Callable.to_function is_harmless [| classifier; py_vec |]) in
         if b then BatSet.add l loops else loops
         ) data BatSet.empty
     in
-    Lymp.close py;
     set
 
 let collect : Global.t -> lib BatSet.t

@@ -8,18 +8,23 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
-(** Alarm Cil.expression *)
-type t =
-  | ArrayExp of Cil.lval * Cil.exp * Cil.location
-  | DerefExp of Cil.exp * Cil.location
-  | DivExp of Cil.exp * Cil.exp * Cil.location
-  | Strcpy of Cil.exp * Cil.exp * Cil.location
-  | Strcat of Cil.exp * Cil.exp * Cil.location
-  | Strncpy of Cil.exp * Cil.exp * Cil.exp * Cil.location
-  | Memcpy of Cil.exp * Cil.exp * Cil.exp *  Cil.location
-  | Memmove of Cil.exp * Cil.exp * Cil.exp * Cil.location
-  | AllocSize of Cil.exp * Cil.location
+(** Alarm sites parameterized by the operand representation (CIL
+    expressions or a client's own). *)
+type ('exp, 'lval) expression =
+  | ArrayExp of 'lval * 'exp * Sparrow_cil.location
+  | DerefExp of 'exp * Sparrow_cil.location
+  | DivExp of 'exp * 'exp * Sparrow_cil.location
+  | Strcpy of 'exp * 'exp * Sparrow_cil.location
+  | Strcat of 'exp * 'exp * Sparrow_cil.location
+  | Strncpy of 'exp * 'exp * 'exp * Sparrow_cil.location
+  | Memcpy of 'exp * 'exp * 'exp *  Sparrow_cil.location
+  | Memmove of 'exp * 'exp * 'exp * Sparrow_cil.location
+  | AllocSize of 'exp * Sparrow_cil.location
+
+type t = (Sparrow_cil.exp, Sparrow_cil.lval) expression
 
 val collect : IntraCfg.cmd -> t list
 val to_string : t -> string
 
+
+val location_of : ('exp, 'lval) expression -> Sparrow_cil.location

@@ -68,8 +68,15 @@ let link_by_sep sep s acc = if acc = "" then s else acc ^ sep ^ s
 let string_of_list ?(first="[") ?(last="]") ?(sep=";") : ('a -> string)
   -> ('a list) -> string
 = fun string_of_v list ->
-  let add_string_of_v v acc = link_by_sep sep (string_of_v v) acc in
-  first ^ list_fold add_string_of_v list "" ^ last
+  (* [link_by_sep] folded left to right, in a buffer: linear instead of
+     quadratic in the text (a call with tens of thousands of arguments). An element
+     is preceded by [sep] exactly when the text so far is non-empty. *)
+  let buffer = Buffer.create 64 in
+  List.iter (fun v ->
+      let s = string_of_v v in
+      if Buffer.length buffer = 0 then Buffer.add_string buffer s
+      else (Buffer.add_string buffer sep; Buffer.add_string buffer s)) list;
+  first ^ Buffer.contents buffer ^ last
 
 let string_of_set ?(first="{") ?(last="}") ?(sep=",") : ('a -> string)
   -> ('a BatSet.t) -> string

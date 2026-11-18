@@ -11,7 +11,7 @@
 (** Inter-procedural CFG *)
 
 open Vocab
-open Cil
+open Sparrow_cil
 open Yojson.Safe
 open IntraCfg.Cmd
 
@@ -45,7 +45,7 @@ type node = Node.t
 
 type t = {
   cfgs        : (pid, IntraCfg.t) BatMap.t;
-  globals     : Cil.global list;
+  globals     : Sparrow_cil.global list;
   call_edges  : (Node.t, ProcSet.t) BatMap.t;
 }
 
@@ -70,12 +70,23 @@ let global_proc = "_G_"
 let start_node = Node.make global_proc IntraCfg.Node.entry
 
 let gen_cfgs file =
-  BatMap.add global_proc (IntraCfg.generate_global_proc file.Cil.globals (Cil.emptyFunction global_proc))
+  BatMap.add global_proc (IntraCfg.generate_global_proc file.Sparrow_cil.globals (Sparrow_cil.emptyFunction global_proc))
     (list_fold (fun g m ->
       match g with
-      | Cil.GFun (f,loc) -> BatMap.add f.svar.vname (IntraCfg.init f loc) m
+      | Sparrow_cil.GFun (f,loc) -> BatMap.add f.svar.vname (IntraCfg.init f loc) m
       | _ -> m
-    ) file.Cil.globals BatMap.empty)
+    ) file.Sparrow_cil.globals BatMap.empty)
+
+(* module (translation-unit) variant: the global proc only initializes the
+   globals and does NOT call main, so a main-less library module still gets
+   a complete InterCfg *)
+let gen_module_cfgs file =
+  BatMap.add global_proc (IntraCfg.generate_module_global_proc file.Sparrow_cil.globals (Sparrow_cil.emptyFunction global_proc))
+    (list_fold (fun g m ->
+      match g with
+      | Sparrow_cil.GFun (f,loc) -> BatMap.add f.svar.vname (IntraCfg.init f loc) m
+      | _ -> m
+    ) file.Sparrow_cil.globals BatMap.empty)
 
 let compute_dom_and_scc icfg =
   { icfg with cfgs =
@@ -92,6 +103,13 @@ let remove_function : pid -> t -> t
 let cfgof : t -> pid -> IntraCfg.t
 =fun g pid ->
   try BatMap.find pid g.cfgs with Not_found -> prerr_endline ("InterCfg.cfgof "^pid); raise Not_found
+
+(* Add (or replace) the IntraCfg.t bound to [pid]. *)
+let add_cfg : pid -> IntraCfg.t -> t -> t
+=fun pid cfg g -> { g with cfgs = BatMap.add pid cfg g.cfgs }
+
+let mem_cfg : pid -> t -> bool
+=fun pid g -> BatMap.mem pid g.cfgs
 
 let cmdof : t -> Node.t -> IntraCfg.cmd
 =fun g (pid,node) -> IntraCfg.find_cmd node (cfgof g pid)
@@ -140,7 +158,7 @@ let is_inside_loop : node -> t -> bool
 let callof : node -> t -> node
 =fun (pid,node) g -> (pid, IntraCfg.callof node (cfgof g pid))
 
-let argsof : t -> pid -> Cil.varinfo list
+let argsof : t -> pid -> Sparrow_cil.varinfo list
 =fun g pid -> IntraCfg.get_formals (cfgof g pid)
 
 let callnodesof : t -> node list
@@ -172,7 +190,7 @@ let remove_node : node -> t -> t
 let print : out_channel -> t -> unit
 =fun chan g -> BatMap.iter (fun pid cfg -> IntraCfg.print_dot chan cfg) g.cfgs
 
-let to_json : t -> json
+let to_json : t -> Yojson.Safe.t
 = fun g ->
   `Assoc (
     BatMap.foldi (fun pid cfg json ->
@@ -206,7 +224,7 @@ let build_strmap : string BatSet.t -> (string, lval) BatMap.t
 =fun strs ->
   BatSet.fold (fun str map ->
     let name = get_cstr_name () in
-    let lv = (Var (Cil.makeGlobalVar name Cil.charPtrType), NoOffset) in
+    let lv = (Var (Sparrow_cil.makeGlobalVar name Sparrow_cil.charPtrType), NoOffset) in
       BatMap.add str lv map
   ) strs BatMap.empty
 
@@ -222,7 +240,7 @@ let replace_salloc : t -> (string, lval) BatMap.t -> t
       | _ -> g
     ) nodes icfg
 
-let dummy_location = { line = 0; file = ""; byte = 0 }
+let dummy_location = { line = 0; file = ""; byte = 0; column = 0; endLine = 0; endByte = 0; endColumn = 0; synthetic = false }
 
 let insert_salloc : t -> (string, lval) BatMap.t -> t
 =fun icfg strmap ->
@@ -251,9 +269,70 @@ let optimize_il : t -> t
   |> map_cfgs IntraCfg.optimize
 (*  |> opt_salloc*)
 
-let init : Cil.file -> t
+let init : Sparrow_cil.file -> t
 =fun file ->
-  { cfgs = gen_cfgs file; globals = file.Cil.globals ; call_edges = BatMap.empty }
+  { cfgs = gen_cfgs file; globals = file.Sparrow_cil.globals ; call_edges = BatMap.empty }
   |> opt !Options.optil optimize_il
   |> compute_dom_and_scc
 
+(* module variant of [init]: no main required (see [gen_module_cfgs]) *)
+let init_module : Sparrow_cil.file -> t
+=fun file ->
+  { cfgs = gen_module_cfgs file; globals = file.Sparrow_cil.globals ; call_edges = BatMap.empty }
+  |> opt !Options.optil optimize_il
+  |> compute_dom_and_scc
+
+(* Stable (function-local) node ids: reset the IntraCfg node counter
+   before each function's CFG build, so a function's node ids -- and
+   therefore its allocation-site identities -- depend only on its own
+   body.  The same function then gets the same ids whether built
+   alone or inside the merged program.  The global proc's ids remain
+   content-dependent (its body differs between a unit and the merged
+   program).  Node ids stay unique within each CFG;
+   nothing in the analysis requires cross-CFG uniqueness. *)
+let reset_node_counter () =
+  IntraCfg.Node.set_next_id (IntraCfg.Node.get_initial_id ())
+
+let gen_cfgs_stable_gproc gproc_of_file file =
+  reset_node_counter ();
+  let gproc = gproc_of_file file in
+  BatMap.add global_proc gproc
+    (list_fold (fun g m ->
+      match g with
+      | Sparrow_cil.GFun (f,loc) ->
+        reset_node_counter ();
+        BatMap.add f.svar.vname (IntraCfg.init f loc) m
+      | _ -> m
+    ) file.Sparrow_cil.globals BatMap.empty)
+
+(* The stable builder resets the node counter for each function, but optimizes
+   only after every CFG has been built. The counter left by the final function
+   is not fresh in another CFG: an array initializer's replacement can overwrite
+   an assume or assignment there. Allocate optimization nodes above this CFG's
+   own maximum, independently of the other functions and the traversal order.
+   The whole-program optimizer and the global procedure of a unit built alone
+   stay as they are.  Restoring the counter also isolates synthetic global
+   provenance. *)
+let optimize_il_stable icfg =
+  map_cfgs (fun cfg ->
+      if IntraCfg.get_pid cfg = global_proc then IntraCfg.optimize cfg
+      else
+        let previous = IntraCfg.Node.get_next_id () in
+        let last = List.fold_left
+            (fun maximum node -> max maximum (IntraCfg.Node.id node))
+            (IntraCfg.Node.get_initial_id ()) (IntraCfg.nodesof cfg) in
+        IntraCfg.Node.set_next_id last;
+        Fun.protect ~finally:(fun () -> IntraCfg.Node.set_next_id previous)
+          (fun () -> IntraCfg.optimize cfg)) icfg
+
+let init_module_stable : Sparrow_cil.file -> t
+=fun file ->
+  { cfgs =
+      gen_cfgs_stable_gproc
+        (fun file ->
+           IntraCfg.generate_module_global_proc file.Sparrow_cil.globals
+             (Sparrow_cil.emptyFunction global_proc))
+        file;
+    globals = file.Sparrow_cil.globals ; call_edges = BatMap.empty }
+  |> opt !Options.optil optimize_il_stable
+  |> compute_dom_and_scc

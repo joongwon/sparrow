@@ -9,7 +9,7 @@
 (*                                                                     *)
 (***********************************************************************)
 open Graph
-open Cil
+open Sparrow_cil
 open Global
 open BasicDom
 open Vocab
@@ -21,6 +21,33 @@ open AlarmExp
 open Report
 
 module Analysis = SparseAnalysis.Make(ItvSem)
+
+let () = Analysis.variable_of := FrameLocal.variable
+
+(* Frame locals (FrameLocal): the call nodes' callees and definitions, the
+   recursive procedures' proc-local locations and the pre-analysis memory. *)
+let () =
+  Analysis.frame_locals_of := (fun global ~defs_at ~proc_local ->
+    begin
+      let icfg = global.Global.icfg in
+      let calls =
+        InterCfg.nodesof icfg
+        |> List.filter_map (fun node ->
+            if not (InterCfg.is_callnode node icfg) then None else
+            match InterCfg.ProcSet.elements (InterCfg.get_callees node icfg) with
+            | [] -> None
+            | callees -> Some (callees, defs_at node))
+      in
+      let recursive_locals =
+        InterCfg.pidsof icfg
+        |> List.filter (fun pid -> Global.is_rec pid global)
+        |> List.map (fun pid -> (pid, proc_local pid))
+      in
+      let locations = FrameLocal.compute ~memory:global.Global.mem ~calls ~recursive_locals in
+      FrameLocal.set locations;
+      prerr_endline ("#frame locals: " ^ string_of_int (BasicDom.PowLoc.cardinal locations));
+      locations
+    end)
 module Table = Analysis.Table
 module Spec = Analysis.Spec
 
@@ -82,78 +109,64 @@ let check_nd v1 : (status * Allocsite.t option * string) list =
       [(UnProven, None, "Null Dereference")]
     else [(Proven, None, "")]
 
-let inspect_aexp_bo : InterCfg.node -> AlarmExp.t -> Mem.t -> query list -> query list
-=fun node aexp mem queries ->
+let inspect_aexp_bo_with ~eval ~eval_lv ~eval_copy_length ~make_query aexp mem queries =
   (match aexp with
     | ArrayExp (lv,e,loc) ->
-        let v1 = Mem.lookup (ItvSem.eval_lv (InterCfg.Node.get_pid node) lv mem) mem in
-        let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e mem in
+        let v1 = Mem.lookup (eval_lv lv) mem in
+        let v2 = eval e in
         let lst = check_bo v1 (Some v2) in
         List.map (fun (status,a,desc) ->
-          { node = node; exp = aexp; loc = loc; allocsite = a;
-            status = status; desc = desc; src = None }) lst
+          make_query ~loc:(loc) ~allocsite:(a) ~status:(status) ~desc:(desc)) lst
     | DerefExp (e,loc) ->
-        let v = ItvSem.eval (InterCfg.Node.get_pid node) e mem in
+        let v = eval e in
         let lst = check_bo v None in
           if Val.eq Val.bot v then
             List.map (fun (status,a,desc) ->
-              { node = node; exp = aexp; loc = loc; allocsite = a;
-                status = status; desc = desc; src = None }) lst
+              make_query ~loc:(loc) ~allocsite:(a) ~status:(status) ~desc:(desc)) lst
           else
             List.map (fun (status,a,desc) ->
               if status = BotAlarm
-              then { node = node; exp = aexp; loc = loc; status = Proven; allocsite = a;
-                     desc = "valid pointer dereference"; src = None }
-              else { node = node; exp = aexp; loc = loc; status = status; allocsite = a;
-                     desc = desc; src = None }) lst
+              then make_query ~loc:(loc) ~allocsite:(a) ~status:(Proven) ~desc:("valid pointer dereference")
+              else make_query ~loc:(loc) ~allocsite:(a) ~status:(status) ~desc:(desc)) lst
     | Strcpy (e1, e2, loc) ->
-        let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 mem in
-        let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 mem in
+        let v1 = eval e1 in
+        let v2 = eval e2 in
         let v2 = Val.of_itv (ArrayBlk.nullof (Val.array_of_val v2)) in
         let lst = check_bo v1 (Some v2) in
-        List.map (fun (status,a,desc) -> { node = node; exp = aexp; loc = loc; allocsite = a;
-                                           status = status; desc = desc; src = None }) lst
+        List.map (fun (status,a,desc) -> make_query ~loc:(loc) ~allocsite:(a) ~status:(status) ~desc:(desc)) lst
     | Strcat (e1, e2, loc) ->
-        let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 mem in
-        let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 mem in
+        let v1 = eval e1 in
+        let v2 = eval e2 in
         let np1 = ArrayBlk.nullof (Val.array_of_val v1) in
         let np2 = ArrayBlk.nullof (Val.array_of_val v2) in
         let np = Val.of_itv (Itv.plus np1 np2) in
         let lst = check_bo v1 (Some np) in
-        List.map (fun (status,a,desc) -> {
-              node = node; exp = aexp; loc = loc; allocsite = a;
-              status = status; desc = desc; src = None }) lst
+        List.map (fun (status,a,desc) -> make_query ~loc:(loc) ~allocsite:(a) ~status:(status) ~desc:(desc)) lst
     | Strncpy (e1, e2, e3, loc)
     | Memcpy (e1, e2, e3, loc)
     | Memmove (e1, e2, e3, loc) ->
-        let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 mem in
-        let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 mem in
-        let e3_1 = Cil.BinOp (Cil.MinusA, e3, Cil.mone, Cil.intType) in
-        let v3 = ItvSem.eval (InterCfg.Node.get_pid node) e3_1 mem in
-        let lst1 = check_bo v1 (Some v3) in
-        let lst2 = check_bo v2 (Some v3) in
+        let v1 = eval e1 in
+        let v2 = eval e2 in
+        let v3opt = Some (eval_copy_length e3) in
+        let lst1 = check_bo v1 v3opt in
+        let lst2 = check_bo v2 v3opt in
         List.map (fun (status,a,desc) ->
-            { node = node; exp = aexp; loc = loc; allocsite = a;
-              status = status; desc = desc; src = None }) (lst1@lst2)
+            make_query ~loc:(loc) ~allocsite:(a) ~status:(status) ~desc:(desc)) (lst1@lst2)
     | _ -> []) @ queries
 
-let inspect_aexp_nd : InterCfg.node -> AlarmExp.t -> Mem.t -> query list -> query list
-=fun node aexp mem queries ->
+let inspect_aexp_nd_with ~eval ~make_query aexp _mem queries =
   (match aexp with
   | DerefExp (e,loc) ->
-    let v = ItvSem.eval (InterCfg.Node.get_pid node) e mem in
+    let v = eval e in
     let lst = check_nd v in
       if Val.eq Val.bot v then
         List.map (fun (status,a,desc) ->
-            { node = node; exp = aexp; loc = loc; allocsite = a;
-              status = status; desc = desc; src = None }) lst
+            make_query ~loc:(loc) ~allocsite:(a) ~status:(status) ~desc:(desc)) lst
       else
         List.map (fun (status,a,desc) ->
           if status = BotAlarm
-          then { node = node; exp = aexp; loc = loc; status = Proven; allocsite = a;
-                 desc = "valid pointer dereference"; src = None }
-          else { node = node; exp = aexp; loc = loc; status = status; allocsite = a;
-                 desc = desc; src = None }) lst
+          then make_query ~loc:(loc) ~allocsite:(a) ~status:(Proven) ~desc:("valid pointer dereference")
+          else make_query ~loc:(loc) ~allocsite:(a) ~status:(status) ~desc:(desc)) lst
   | _ -> []) @ queries
 
 let check_dz v =
@@ -162,52 +175,73 @@ let check_dz v =
     [(UnProven, None, "Divide by "^Itv.to_string v)]
   else [(Proven, None, "")]
 
-let inspect_aexp_dz : InterCfg.node -> AlarmExp.t -> Mem.t -> query list -> query list
-= fun node aexp mem queries ->
+let inspect_aexp_dz_with ~eval ~make_query aexp _mem queries =
   (match aexp with
       DivExp (_, e, loc) ->
-      let v = ItvSem.eval (InterCfg.Node.get_pid node) e mem in
+      let v = eval e in
       let lst = check_dz v in
         List.map (fun (status,a,desc) ->
-          { node = node; exp = aexp; loc = loc; allocsite = None;
-            status = status; desc = desc; src = None }) lst
+          make_query ~loc:(loc) ~allocsite:(None) ~status:(status) ~desc:(desc)) lst
   | _ -> []) @ queries
+
+(* The same alarm rules consume either CIL expressions or operand values a
+   client computes itself. The callbacks only supply operand values and report
+   metadata; they do not change the checker's status or approximation. *)
+let original_query node exp ~loc ~allocsite ~status ~desc =
+  { node; exp; loc; allocsite; status; desc; src = None }
+
+let copy_length_expression e =
+  Sparrow_cil.BinOp (Sparrow_cil.MinusA, e, Sparrow_cil.mone, Sparrow_cil.intType)
+
+let inspect_aexp_bo node aexp mem queries =
+  let eval e = ItvSem.eval (InterCfg.Node.get_pid node) e mem in
+  inspect_aexp_bo_with ~eval ~eval_lv:(fun lv -> ItvSem.eval_lv (InterCfg.Node.get_pid node) lv mem)
+    ~eval_copy_length:(fun e -> eval (copy_length_expression e))
+    ~make_query:(original_query node aexp) aexp mem queries
+
+let inspect_aexp_nd node aexp mem queries =
+  inspect_aexp_nd_with ~eval:(fun e -> ItvSem.eval (InterCfg.Node.get_pid node) e mem)
+    ~make_query:(original_query node aexp) aexp mem queries
+
+let inspect_aexp_dz node aexp mem queries =
+  inspect_aexp_dz_with ~eval:(fun e -> ItvSem.eval (InterCfg.Node.get_pid node) e mem)
+    ~make_query:(original_query node aexp) aexp mem queries
 
 let machine_gen_code : query -> bool
 = fun q ->
   (* yacc-generated code *)
-  Filename.check_suffix q.loc.Cil.file ".y" || Filename.check_suffix q.loc.Cil.file ".yy.c" ||
-  Filename.check_suffix q.loc.Cil.file ".simple" ||
+  Filename.check_suffix q.loc.Sparrow_cil.file ".y" || Filename.check_suffix q.loc.Sparrow_cil.file ".yy.c" ||
+  Filename.check_suffix q.loc.Sparrow_cil.file ".simple" ||
   (* sparrow-generated code *)
   InterCfg.Node.get_pid q.node = InterCfg.global_proc
 
-let rec unsound_exp : Cil.exp -> bool
+let rec unsound_exp : Sparrow_cil.exp -> bool
 = fun e ->
   match e with
-  | Cil.BinOp (Cil.PlusPI, Cil.Lval (Cil.Mem _, _), _, _) -> true
-  | Cil.BinOp (b, _, _, _) when b = Mod || b = Cil.Shiftlt || b = Shiftrt || b = BAnd
+  | Sparrow_cil.BinOp (Sparrow_cil.PlusPI, Sparrow_cil.Lval (Sparrow_cil.Mem _, _), _, _) -> true
+  | Sparrow_cil.BinOp (b, _, _, _) when b = Mod || b = Sparrow_cil.Shiftlt || b = Shiftrt || b = BAnd
       || b = BOr || b = BXor || b = LAnd || b = LOr -> true
-  | Cil.BinOp (bop, Cil.Lval (Cil.Var _, _), Cil.Lval (Cil.Var _, _), _)
-    when bop = Cil.PlusA || bop = Cil.MinusA -> true
-  | Cil.BinOp (_, e1, e2, _) -> (unsound_exp e1) || (unsound_exp e2)
-  | Cil.CastE (_, e) -> unsound_exp e
-  | Cil.Lval lv -> unsound_lv lv
+  | Sparrow_cil.BinOp (bop, Sparrow_cil.Lval (Sparrow_cil.Var _, _), Sparrow_cil.Lval (Sparrow_cil.Var _, _), _)
+    when bop = Sparrow_cil.PlusA || bop = Sparrow_cil.MinusA -> true
+  | Sparrow_cil.BinOp (_, e1, e2, _) -> (unsound_exp e1) || (unsound_exp e2)
+  | Sparrow_cil.CastE (_, _, e) -> unsound_exp e
+  | Sparrow_cil.Lval lv -> unsound_lv lv
   | _ -> false
 
-and unsound_lv : Cil.lval -> bool = function
-  | (_, Cil.Index _) -> true
-  | (Cil.Var v, _) -> is_global_integer v || is_union v.vtype || is_temp_integer v
-  | (Cil.Mem _, Cil.NoOffset) -> true
+and unsound_lv : Sparrow_cil.lval -> bool = function
+  | (_, Sparrow_cil.Index _) -> true
+  | (Sparrow_cil.Var v, _) -> is_global_integer v || is_union v.vtype || is_temp_integer v
+  | (Sparrow_cil.Mem _, Sparrow_cil.NoOffset) -> true
   | (_, _) -> false
-and is_global_integer v = v.vglob && Cil.isIntegralType v.vtype
+and is_global_integer v = v.vglob && Sparrow_cil.isIntegralType v.vtype
 and is_union typ =
-  match Cil.unrollTypeDeep typ with
-    Cil.TPtr (Cil.TComp (c, _), _) -> not c.cstruct
+  match Sparrow_cil.unrollTypeDeep typ with
+    Sparrow_cil.TPtr (Sparrow_cil.TComp (c, _), _) -> not c.cstruct
   | _ -> false
 and is_temp_integer v =
   !Options.bugfinder >= 2
   && (try String.sub v.vname 0 3 = "tmp" with _ -> false)
-  && Cil.isIntegralType v.vtype
+  && Sparrow_cil.isIntegralType v.vtype
 
 let unsound_aexp : AlarmExp.t -> bool = function
   | ArrayExp (lv, e, _) -> unsound_exp e
@@ -217,14 +251,14 @@ let unsound_aexp : AlarmExp.t -> bool = function
 let formal_param : Global.t -> query -> bool
 = fun global q ->
   let cfg = InterCfg.cfgof global.icfg (InterCfg.Node.get_pid q.node) in
-  let formals = IntraCfg.get_formals cfg |> List.map (fun x -> x.Cil.vname) in
+  let formals = IntraCfg.get_formals cfg |> List.map (fun x -> x.Sparrow_cil.vname) in
   let rec find_exp = function
-    | Cil.BinOp (_, e1, e2, _) -> (find_exp e1) || (find_exp e2)
-    | Cil.CastE (_, e) -> find_exp e
-    | Cil.Lval lv -> find_lv lv
+    | Sparrow_cil.BinOp (_, e1, e2, _) -> (find_exp e1) || (find_exp e2)
+    | Sparrow_cil.CastE (_, _, e) -> find_exp e
+    | Sparrow_cil.Lval lv -> find_lv lv
     | _ -> false
   and find_lv = function
-    | (Cil.Var v, _) -> (List.mem v.vname formals) && Cil.isIntegralType v.vtype
+    | (Sparrow_cil.Var v, _) -> (List.mem v.vname formals) && Sparrow_cil.isIntegralType v.vtype
     | (_, _) -> false
   in
   match q.exp with
@@ -336,6 +370,25 @@ let do_analysis : Global.t -> Global.t * Table.t * Table.t * Report.query list
     Spec.locset; Spec.locset_fs; premem = global.mem; Spec.unsound_lib;
     Spec.unsound_update; Spec.unsound_bitwise; } in
   cond !Options.marshal_in marshal_in (Analysis.perform spec) global
+  |> opt !Options.marshal_out marshal_out
+  |> StepManager.stepf true "Generate Alarm Report" (fun (global,inputof,outputof) ->
+      (global,inputof,outputof,inspect_alarm global spec inputof))
+
+let do_analysis_with_sparse_analysis_hook analysis_hook transfer_hook global =
+  let _ = prerr_memory_usage () in
+  let locset = get_locset global.mem in
+  let locset_fs = PartialFlowSensitivity.select global locset in
+  let unsound_lib = UnsoundLib.collect global in
+  let unsound_update = (!Options.bugfinder >= 2) in
+  let unsound_bitwise = (!Options.bugfinder >= 1) in
+  let spec = { Spec.empty with
+    Spec.locset; Spec.locset_fs; premem = global.mem; Spec.unsound_lib;
+    Spec.unsound_update; Spec.unsound_bitwise; } in
+  let step node input =
+    ItvSem.with_transfer_hook transfer_hook (fun () -> ItvSem.run AbsSem.Strong spec node input) in
+  let visit rows dug node state =
+    analysis_hook spec dug node state (fun () -> Analysis.analyze_node rows step dug node state) in
+  cond !Options.marshal_in marshal_in (Analysis.perform_with visit spec) global
   |> opt !Options.marshal_out marshal_out
   |> StepManager.stepf true "Generate Alarm Report" (fun (global,inputof,outputof) ->
       (global,inputof,outputof,inspect_alarm global spec inputof))

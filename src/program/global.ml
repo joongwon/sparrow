@@ -14,7 +14,7 @@ open BasicDom
 open InterCfg
 
 type t = {
-  file : Cil.file;
+  file : Sparrow_cil.file;
   icfg : InterCfg.t;
   callgraph : CallGraph.t;
   dump : Dump.t;
@@ -39,6 +39,19 @@ let remove_unreachable_nodes : t -> t
 =fun global ->
   let nodes_all = InterCfg.nodesof global.icfg in
   let unreachable = InterCfg.unreachable_node global.icfg in
+  (* Observe which generated [_G_] chain nodes the reachability trim after
+     the merge is about to delete. *)
+  let unreachable_global_nodes =
+    InterCfg.NodeSet.fold
+      (fun node nodes ->
+         if InterCfg.Node.get_pid node = InterCfg.global_proc then
+           IntraCfg.NodeSet.add (InterCfg.Node.get_cfgnode node) nodes
+         else nodes)
+      unreachable IntraCfg.NodeSet.empty
+  in
+  IntraCfg.finish_global_provenance
+    ~unreachable:unreachable_global_nodes
+    (InterCfg.cfgof global.icfg InterCfg.global_proc);
   let global = NodeSet.fold remove_node unreachable global in
   my_prerr_newline ();
   my_prerr_string "#nodes all   : ";
@@ -67,7 +80,27 @@ let remove_unreachable_functions : t -> t
 let init file =
   { file = file;
     icfg = InterCfg.init file;
-    callgraph = CallGraph.empty;
+    callgraph = CallGraph.create ();
+    dump = Dump.empty;
+    mem = ItvDom.Mem.bot;
+    table = ItvDom.Table.bot; }
+  |> remove_unreachable_nodes
+
+(* module variant: InterCfg.init_module, no main required *)
+let init_module file =
+  { file = file;
+    icfg = InterCfg.init_module file;
+    callgraph = CallGraph.create ();
+    dump = Dump.empty;
+    mem = ItvDom.Mem.bot;
+    table = ItvDom.Table.bot; }
+  |> remove_unreachable_nodes
+
+(* stable (function-local) node ids -- see InterCfg.init_module_stable *)
+let init_module_stable file =
+  { file = file;
+    icfg = InterCfg.init_module_stable file;
+    callgraph = CallGraph.create ();
     dump = Dump.empty;
     mem = ItvDom.Mem.bot;
     table = ItvDom.Table.bot; }
@@ -84,7 +117,7 @@ let get_leaf_procs : t -> PowProc.t
         then PowProc.add fid
         else id) pids PowProc.bot
 
-let to_json : t -> json
+let to_json : t -> Yojson.Safe.t
 = fun g ->
   `Assoc
       [ ("callgraph", CallGraph.to_json g.callgraph);

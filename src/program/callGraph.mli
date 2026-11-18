@@ -14,6 +14,7 @@
 type t
 
 val empty : t
+val create : unit -> t
 
 val callees : InterCfg.pid -> t -> BasicDom.PowProc.t
 val trans_callees : InterCfg.pid -> t -> BasicDom.PowProc.t
@@ -27,4 +28,4 @@ val compute_trans_calls : t -> t
 
 (** {2 Print } *)
 
-val to_json : t -> Yojson.Safe.json
+val to_json : t -> Yojson.Safe.t

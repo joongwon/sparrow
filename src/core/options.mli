@@ -48,6 +48,12 @@ val unsound_alloc : bool ref
 (** {2 Main Analysis } *)
 
 val narrow : bool ref
+val widen_thresholds : int BatSet.t ref
+(** Interval widening thresholds (default [{0}]). *)
+val widen_thresholds_of_string : string -> int BatSet.t
+(** Comma-separated integers; [""] is the empty set.  Raises [Arg.Bad]. *)
+val string_of_widen_thresholds : int BatSet.t -> string
+(** The canonical text: ascending, comma-separated. *)
 val scaffold : bool ref
 val int_overflow : bool ref
 

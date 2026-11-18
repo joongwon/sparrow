@@ -9,6 +9,22 @@
 (*                                                                     *)
 (***********************************************************************)
 (** Def-use graph *)
+(** Label interning: [intern] returns the resident set with the same
+    elements, in order, each [E.equal] to the argument's (so the same
+    representative of every location), or makes the argument resident.
+    Residents are held weakly. *)
+module Label_intern_stats : sig
+  val calls : int ref
+  val shared : int ref
+end
+
+module Label_intern (P : PowDom.CPO) (E : sig
+  val equal : P.elt -> P.elt -> bool
+  val hash : P.elt -> int
+end) : sig
+  val intern : P.t -> P.t
+end
+
 module type S =
 sig
   type t
@@ -18,18 +34,22 @@ sig
 
   val create            : ?size : int -> unit -> t
   val nb_node           : t -> int
+  val nb_edge           : t -> int
   val nb_loc            : t -> int
   val nodesof           : t -> node BatSet.t
 
   val succ              : node -> t -> node list
   val pred              : node -> t -> node list
 
+  val add_node          : node -> t -> t
   val add_edge          : node -> node -> t -> t
   val remove_node       : node -> t -> t
   val get_abslocs       : node -> node -> t -> PowLoc.t
-  val mem_duset         : Loc.t -> PowLoc.t -> bool
   val add_absloc        : node -> Loc.t -> node -> t -> t
   val add_abslocs       : node -> PowLoc.t -> node -> t -> t
+  val remove_absloc     : node -> Loc.t -> node -> t -> t
+  val remove_abslocs    : node -> PowLoc.t -> node -> t -> t
+  val compact           : t -> t
 
 (** {2 Iterator } *)
 
@@ -41,7 +61,7 @@ sig
 (** {2 Print } *)
 
   val to_dot            : t -> string
-  val to_json           : t -> Yojson.Safe.json
+  val to_json           : t -> Yojson.Safe.t
 end
 
 module Make (Dom : InstrumentedMem.S) : S

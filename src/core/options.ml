@@ -42,6 +42,20 @@ let taint = ref false
 (* Analyzer *)
 let nobar = ref false
 let narrow = ref false
+(* Interval widening thresholds (Itv.Integer.lower_widen/upper_widen and the
+   narrowing that undoes them).  Default {0}. *)
+let widen_thresholds = ref (BatSet.singleton 0)
+let widen_thresholds_of_string s =
+  if String.trim s = "" then BatSet.empty
+  else
+    String.split_on_char ',' s
+    |> List.map (fun part ->
+        match int_of_string_opt (String.trim part) with
+        | Some n -> n
+        | None -> raise (Arg.Bad ("-widen_thresholds: not an integer: " ^ part)))
+    |> BatSet.of_list
+let string_of_widen_thresholds set =
+  String.concat "," (List.map string_of_int (BatSet.to_list set))
 let profile = ref false
 let scaffold = ref true
 
@@ -107,6 +121,7 @@ let opts =
   ("-taint", (Arg.Set taint), "Do taint analysis");
   ("-profile", (Arg.Set profile), "Profiler");
   ("-narrow", (Arg.Set narrow), "Do narrowing");
+  ("-widen_thresholds", (Arg.String (fun s -> widen_thresholds := widen_thresholds_of_string s)), "Interval widening thresholds, a comma-separated list of integers, \"\" for none (default: 0)");
   ("-unsound_loop", (Arg.String (fun s -> unsound_loop := BatSet.add s !unsound_loop)), "Unsound loops");
   ("-unsound_lib", (Arg.String (fun s -> unsound_lib := BatSet.add s !unsound_lib)), "Unsound libs");
   ("-unsound_recursion", (Arg.Set unsound_recursion), "Unsound recursive calls");

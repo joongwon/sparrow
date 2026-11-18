@@ -17,177 +17,119 @@ module type S =
 sig
   module DUGraph : Dug.S
   type t
+  type order_entry = {
+    node : BasicDom.Node.t;
+    order : int;
+    rank : int;
+    loop_header : bool;
+    head_order : int option;
+  }
+  type snapshot = {
+    order : order_entry list;
+    sccs : BasicDom.Node.t list list;
+    loop_headers : BasicDom.Node.t list;
+  }
   val init : DUGraph.t -> t
   val pick : t -> (BasicDom.Node.t * t) option
+  val push_init : BasicDom.Node.t BatSet.t -> t -> t
   val push : BasicDom.Node.t -> BasicDom.Node.t -> t -> t
   val push_set : BasicDom.Node.t -> BasicDom.Node.t BatSet.t -> t -> t
   val is_loopheader : BasicDom.Node.t -> t -> bool
-end
-
-module NGraph = struct
-  module Node = struct
-    type t = int [@@deriving compare]
-    let hash = Hashtbl.hash
-    let equal = ( = )
-  end
-
-  module G = Graph.Imperative.Digraph.Concrete (Node)
-  include G
-  include Graph.Components.Make (G)
-  let add_edge g s d = add_edge g s d; g
-  let remove_edge g s d = remove_edge g s d; g
-  let empty size = create ~size:size ()
+  val snapshot : t -> snapshot
 end
 
 module Make (DUGraph : Dug.S) = struct
   module DUGraph = DUGraph
   module Workorder = struct
+    module H = Hashtbl.Make (Node)
+    (* A node's order, head flag, canonical rank and head order (-1: none) *)
+    type entry = { order : int; head : bool; rank : int; head_order : int }
     type t = {
-      order : (DUGraph.node, int * bool) BatMap.t;
-      headorder: (DUGraph.node, int) BatMap.t;
-      loopheads : DUGraph.node BatSet.t
+      entries : entry H.t;
+      sccs : DUGraph.node list list;
     }
 
-    let empty = {
-      order = BatMap.empty;
-      headorder = BatMap.empty;
-      loopheads = BatSet.empty
-    }
+    let is_loopheader here info =
+      match H.find_opt info.entries here with Some e -> e.head | None -> false
 
-    let make : DUGraph.t -> NGraph.t * (int, DUGraph.node) BatMap.t
-    = fun g ->
-      let i = ref 0 in
-      let new_i () = let v = !i in i := !i + 1; v in
-      let create n i2n n2i =
-        try (BatMap.find n n2i, i2n, n2i) with Not_found ->
-          let i = new_i () in
-          (i, BatMap.add i n i2n, BatMap.add n i n2i) in
-      let add_edge src dst (ng, i2n, n2i) =
-        let (i_src, i2n, n2i) = create src i2n n2i in
-        let (i_dst, i2n, n2i) = create dst i2n n2i in
-        (NGraph.add_edge ng i_src i_dst, i2n, n2i) in
-      let (ng, i2n, _) =
-        DUGraph.fold_edges add_edge g (NGraph.empty (DUGraph.nb_node g), BatMap.empty, BatMap.empty) in
-      (ng, i2n)
-
-    let projection : (NGraph.vertex, NGraph.vertex) Hashtbl.t -> NGraph.t -> NGraph.t
-    = fun scc ng ->
-      let add_back_edge e newg =
-        NGraph.fold_succ (fun s newg ->
-            if Hashtbl.mem scc s then NGraph.add_edge newg e s
-            else newg) ng e newg
-      in
-      Hashtbl.fold (fun x _ g -> add_back_edge x g) scc (NGraph.empty (Hashtbl.length scc))
-
-    let loophead_of scc ng =
-      (* score : # incomming inner edges *)
-      let get_score n =
-        let preds = NGraph.pred ng n in
-        let preds = List.filter (fun n -> Hashtbl.mem scc n) preds in
-        List.length preds in
-      let score =
-        NGraph.fold_edges (fun src dst score ->
-            if not (Hashtbl.mem scc src) && Hashtbl.mem scc dst then
-              let new_score = get_score dst in
-              match score with
-                None -> Some (dst, new_score)
-              | Some (_, old_score) when new_score > old_score -> Some (dst, new_score)
-              | _ -> score
-            else score) ng None
-      in
-      match score with Some (n, _) -> n | None -> assert false
-
-    let cut_backedges ng entry =
-      let preds = NGraph.pred ng entry in
-      let cut_edge pred ng = NGraph.remove_edge ng pred entry in
-      list_fold cut_edge preds ng
-
-    let rec get_order1 sccs ng (wo, lhs, ho) order =
-      match sccs with
-      | scc :: t ->
-        let size = List.length scc in
-        if size > 1 then
-          let headorder = order + 3 * size in
-          let scc_hash = Hashtbl.create size in
-          List.iter (fun x -> Hashtbl.add scc_hash x x) scc;
-          Profiler.start_event "Worklist.projection";
-          let ng' = projection scc_hash ng in
-          Profiler.finish_event "Worklist.projection";
-          Profiler.start_event "Worklist.loophead_of";
-          let lh = try loophead_of scc_hash ng with _ -> List.hd scc in
-          Profiler.finish_event "Worklist.loophead_of";
-          let (lhs, ho) = (BatSet.add lh lhs, BatMap.add lh headorder ho) in
-          let (wo, lhs, ho, _) = get_order1 t ng (wo, lhs, ho) (headorder + 1) in
-          let ng' = cut_backedges ng' lh in
-          let sccs' = List.rev (NGraph.scc_list ng') in
-          get_order1 sccs' ng' (wo, lhs, ho) order
-        else
-          let n = List.hd scc in
-          get_order1 t ng (BatMap.add n order wo, lhs, ho) (order + 1)
-      | [] -> (wo, lhs, ho, order)
-
-    let rec get_order2 sccs (wo, lhs, ho) order =
-      match sccs with
-      | (scc, ng) :: t ->
-        let size = List.length scc in
-        if List.length scc > 1 then
-          let headorder = order + size in
-          let scc_hash = Hashtbl.create size in
-          List.iter (fun x -> Hashtbl.add scc_hash x x) scc;
-          Profiler.start_event "Worklist.loophead_of";
-          let lh = loophead_of scc_hash ng in
-          Profiler.finish_event "Worklist.loophead_of";
-          let (lhs, ho) = (BatSet.add lh lhs, BatMap.add lh headorder ho) in
-          Profiler.start_event "Worklist.projection";
-          let ng' = projection scc_hash ng in
-          Profiler.finish_event "Worklist.projection";
-          let ng' = cut_backedges ng' lh in
-          let sccs' = List.rev (NGraph.scc_list ng') |> List.map (fun scc -> (scc, ng')) in
-          get_order2 (sccs'@t) (wo, lhs, ho) (order + 1)
-        else
-          let n = List.hd scc in
-          get_order2 t (BatMap.add n order wo, lhs, ho) (order + 1)
-      | [] -> (wo, lhs, ho, order)
-
-    let is_loopheader here info = BatSet.mem here info.loopheads
-
+    (* The canonical weak topological order (CanonOrder): nodes numbered by
+       their canonical key, the graph of the def-use edges that carry a
+       location, Sparrow's recursive decomposition with key-order
+       enumeration and key-order head tie-break.  Edge-isolated nodes get
+       trailing orders in key order. *)
     let perform g =
-      let (ng, i2n) = make g in
-      let sccs = List.rev (NGraph.scc_list ng) in
+      let nodes =
+        DUGraph.fold_node (fun n acc -> (CanonOrder.key_of n, n) :: acc) g []
+        |> List.sort (fun (a, n) (b, m) ->
+            let c = CanonOrder.compare_key a b in
+            if c <> 0 then c else Node.compare n m)
+        |> List.map snd |> Array.of_list
+      in
+      let count = Array.length nodes in
+      let index = Hashtbl.create (2 * count + 1) in
+      Array.iteri (fun i n -> Hashtbl.replace index n i) nodes;
+      let outgoing = Array.make count [] and touched = Array.make count false in
+      Profiler.start_event "Worklist.graph";
+      DUGraph.iter_edges (fun src dst ->
+          if not (DUGraph.PowLoc.is_empty (DUGraph.get_abslocs src dst g)) then begin
+            let s = Hashtbl.find index src and d = Hashtbl.find index dst in
+            outgoing.(s) <- d :: outgoing.(s);
+            touched.(s) <- true;
+            touched.(d) <- true
+          end) g;
+      let successors = Array.map (fun xs -> Array.of_list (List.sort_uniq Int.compare xs)) outgoing in
+      Profiler.finish_event "Worklist.graph";
       Profiler.start_event "Worklist.get_order";
-      let (wo, lhs, ho, _) =
-        get_order1 sccs ng (BatMap.empty, BatSet.empty, BatMap.empty) 0 in
-(*        get_order2 (List.map (fun scc -> (scc,ng)) sccs) (BatMap.empty, BatSet.empty, BatMap.empty) 0 in*)
+      let d = CanonOrder.decompose successors touched in
       Profiler.finish_event "Worklist.get_order";
-
-      let add_rec_node src dst nodes =
-        if NGraph.Node.compare src dst = 0 then BatSet.add src nodes else nodes
+      (* The band condition of the canonical order (report only: the
+         whole-program analysis itself does not depend on it). *)
+      CanonOrder.last_band_violations := d.CanonOrder.band_violations;
+      List.iter
+        (fun v ->
+          prerr_endline
+            ("CANON_ORDER_BAND_VIOLATION scope=worklist "
+            ^ CanonOrder.string_of_band_violation
+                (fun i -> CanonOrder.string_of_key (CanonOrder.key_of nodes.(i))) v))
+        d.CanonOrder.band_violations;
+      let entries = H.create (2 * count + 1) in
+      Array.iteri (fun i n ->
+          H.replace entries n
+            { order = d.CanonOrder.orders.(i); head = d.heads.(i); rank = i;
+              head_order = d.head_orders.(i) }) nodes;
+      CanonOrder.last_heads :=
+        Array.to_list nodes |> List.filter (fun n -> (H.find entries n).head)
+        |> List.map CanonOrder.key_of |> List.sort CanonOrder.compare_key;
+      let sccs =
+        Array.to_list d.top_components
+        |> List.map (fun scc -> Array.to_list scc |> List.map (fun i -> nodes.(i)))
       in
-      let lhs = NGraph.fold_edges add_rec_node ng lhs in
-      let trans_map trans_k trans_v m =
-      let add_1 k v = BatMap.add (trans_k k) (trans_v k v) in
-      BatMap.foldi add_1 m BatMap.empty in
-      let trans_set trans_v s =
-        let add_1 v = BatSet.add (trans_v v) in
-        BatSet.fold add_1 s BatSet.empty
-      in
-      let trans_k k = BatMap.find k i2n in
-
-      Profiler.start_event "Worklist.trans";
-      let wo = trans_map trans_k (fun k v -> (v, BatSet.mem k lhs)) wo in
-      let lhs = trans_set (fun v -> BatMap.find v i2n) lhs in
-      let ho = trans_map trans_k (fun _ v -> v) ho in
-      Profiler.finish_event "Worklist.trans";
-      { order = wo; headorder = ho; loopheads = lhs }
+      { entries; sccs }
   end
 
+  type order_entry = {
+    node : BasicDom.Node.t;
+    order : int;
+    rank : int;
+    loop_header : bool;
+    head_order : int option;
+  }
+  type snapshot = {
+    order : order_entry list;
+    sccs : BasicDom.Node.t list list;
+    loop_headers : BasicDom.Node.t list;
+  }
+
+  (* (order, head flag), canonical rank, node: the order number first, then
+     the canonical rank (the key order), then a head entry before a plain
+     one.  The rank is unique per node. *)
   module Ord = struct
-    type t = workorder * DUGraph.node
+    type t = workorder * int * DUGraph.node
     and workorder = int * bool
-    let compare ((o1, head1), v1) ((o2, head2), v2) =
+    let compare ((o1, head1), r1, _) ((o2, head2), r2, _) =
       let cmp_o = o1 - o2 in
       if cmp_o = 0 then
-        let c = Node.compare v1 v2 in
+        let c = Int.compare r1 r2 in
         if c = 0 then
           if head1 = head2 then 0 else if head1 then -1 else 1
         else c
@@ -199,46 +141,65 @@ module Make (DUGraph : Dug.S) = struct
     set : S.t;
     order : Workorder.t;
   }
-  let compare_order succ idx order =
-    try
-      let id1 = BatMap.find idx order.Workorder.order in
-      let id2 = BatMap.find succ order.Workorder.order in
-      Ord.compare (id2,succ) (id1,idx) <= 0
-    with Not_found -> false
+  (* The entry of node [n] reached along an inner edge (a successor not
+     after its source) at a loop head takes the head order. *)
+  let entry ?(inner = false) n ws =
+    let e = Workorder.H.find ws.order.Workorder.entries n in
+    let o = if inner && e.Workorder.head && e.head_order >= 0 then e.head_order else e.order in
+    ((o, e.head), e.rank, n)
 
-  let queue is_inneredge n wl =
-  (* change order if,
-     - the n node has a loophead order, and
-     - an inneredge to the n node is updated
-  *)
-    let rec change_order n o is_inneredge =
-      let is_loophead = snd o in
-      if is_inneredge && is_loophead then
-        try (BatMap.find n wl.order.Workorder.headorder, is_loophead) with Not_found -> o
-      else o in
-    let o = BatMap.find n wl.order.Workorder.order in
-    let new_o = change_order n o is_inneredge in
-    { wl with set = S.add (new_o, n) wl.set }
+  let queue is_inneredge n wl = { wl with set = S.add (entry ~inner:is_inneredge n wl) wl.set }
+
+  let compare_order succ idx ws =
+    match Workorder.H.find_opt ws.order.Workorder.entries idx,
+          Workorder.H.find_opt ws.order.Workorder.entries succ with
+    | Some i, Some s ->
+      Ord.compare ((s.order, s.head), s.rank, succ) ((i.order, i.head), i.rank, idx) <= 0
+    | _ -> false
+
+  let push_init nodes ws =
+    BatSet.fold (fun n works -> queue false n works) nodes ws
 
   let push : Node.t -> Node.t -> t -> t
   = fun idx succ ws ->
-    let bInnerLoop = compare_order succ idx ws.order in
+    let bInnerLoop = compare_order succ idx ws in
     queue bInnerLoop succ ws
 
   let push_set : Node.t -> Node.t BatSet.t -> t -> t
   = fun idx succs ws ->
     BatSet.fold (fun succ works ->
-      let bInnerLoop = compare_order succ idx works.order in
+      let bInnerLoop = compare_order succ idx works in
       queue bInnerLoop succ works
     ) succs ws
 
-  let init dug = { set = S.empty; order = Workorder.perform dug }
+  let init dug =
+    { set = S.empty; order = Workorder.perform dug }
 
   let is_loopheader idx ws = Workorder.is_loopheader idx ws.order
 
+  let snapshot ws =
+    let entries = ws.order.Workorder.entries in
+    let order =
+      Workorder.H.fold (fun node (e : Workorder.entry) acc ->
+        { node; order = e.order; rank = e.rank; loop_header = e.head;
+          head_order = if e.head_order >= 0 then Some e.head_order else None } :: acc)
+        entries []
+      |> List.sort (fun (a : order_entry) (b : order_entry) ->
+        let cmp = compare a.order b.order in
+        if cmp <> 0 then cmp else Int.compare a.rank b.rank)
+    in
+    let sccs =
+      List.map (List.sort Node.compare) ws.order.Workorder.sccs
+    in
+    let loop_headers =
+      Workorder.H.fold (fun n (e : Workorder.entry) acc -> if e.head then n :: acc else acc) entries []
+      |> List.sort Node.compare
+    in
+    { order; sccs; loop_headers }
+
   let pick ws =
     try
-      let ((_,n) as e, set) = S.pop_min ws.set in
+      let ((_,_,n), set) = S.pop_min ws.set in
       let ws = { ws with set } in
       Some (n, ws)
     with Not_found -> None

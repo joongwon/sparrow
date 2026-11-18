@@ -48,15 +48,16 @@ struct
 
   let itv_top : t = (Itv.top, PowLoc.bot, ArrayBlk.bot, StructBlk.bot, PowProc.bot)
 
-  let cast : Cil.typ -> Cil.typ -> t -> t
-  = fun from_typ to_typ v ->
-    let (from_typ, to_typ) = BatTuple.Tuple2.mapn Cil.unrollTypeDeep (from_typ, to_typ) in
-    if v = (of_itv Itv.zero) && (Cil.isPointerType to_typ) then (* char* x = (char* ) 0 *)
+  let cast_with_layout resolve_comp from_typ to_typ v =
+    let (from_typ, to_typ) = BatTuple.Tuple2.mapn Sparrow_cil.unrollTypeDeep (from_typ, to_typ) in
+    if v = (of_itv Itv.zero) && (Sparrow_cil.isPointerType to_typ) then (* char* x = (char* ) 0 *)
       null
-    else if Cil.isIntegralType to_typ then
+    else if Sparrow_cil.isIntegralType to_typ then
       v |> itv_of_val |> Itv.cast from_typ to_typ |> of_itv
     else
-      v |> array_of_val |> ArrayBlk.cast_array to_typ |> flip modify_arr v
+      v |> array_of_val |> ArrayBlk.cast_array_with_layout resolve_comp to_typ |> flip modify_arr v
+
+  let cast = cast_with_layout Fun.id
 
   let to_string x =
    "("^(Itv.to_string (fst x))^", "^(PowLoc.to_string (snd x))^", "
@@ -70,21 +71,31 @@ module Mem =
 struct
   include InstrumentedMem.Make(MapDom.MakeCPO (Loc) (Val))
 
-  let add k v m =
+  let normalize_store_value k v =
     match Loc.typ k with
-    | Some t when Cil.isArithmeticType t -> add k (Val.itv_of_val v |> Val.of_itv) m
-    | _ -> add k v m
+    | Some t when Sparrow_cil.isArithmeticType t -> Val.itv_of_val v |> Val.of_itv
+    | _ -> v
+
+  let add k v m = add k (normalize_store_value k v) m
 
   let weak_add k v m =
-    match Loc.typ k with
-    | Some t when Cil.isArithmeticType t -> weak_add k (Val.itv_of_val v |> Val.of_itv) m
-    | _ -> weak_add k v m
+    weak_add k (normalize_store_value k v) m
 
-  let lookup : PowLoc.t -> t -> Val.t = fun locs mem ->
-    if eq mem bot then Val.bot
+  let lookup_from ~observed locs payload =
+    if eq observed bot then Val.bot
     else
-      let find_join loc acc = Val.join acc (find loc mem) in
+      let find_join loc acc =
+        observe_read loc observed;
+        Val.join acc (find_unobserved loc payload) in
       PowLoc.fold find_join locs Val.bot
+
+  let lookup locs mem = lookup_from ~observed:mem locs mem
+
+  (* Record a read of [locs] in [mem] without computing its value, for a
+     client that takes the value from another version of the memory; the
+     use belongs to [mem].  No access scope is created or replaced here. *)
+  let observe_lookup locs mem =
+    if not (eq mem bot) then PowLoc.iter (fun loc -> observe_read loc mem) locs
 
   let strong_update : PowLoc.t -> Val.t -> t -> t
   = fun locs v mem ->
@@ -93,6 +104,16 @@ struct
   let weak_update : PowLoc.t -> Val.t -> t -> t
   = fun locs v mem ->
     PowLoc.fold (fun x -> weak_add x v) locs mem
+
+  (* Record the accesses of a store without performing it.  Normalization
+     queries precede each write just as in [add]/[weak_add]. Their type
+     decision is independent of the value; interval projection/injection are
+     total. No resulting memory or changed-memory observer may be demanded
+     at this endpoint. *)
+  let observe_update ~weak locs =
+    PowLoc.iter (fun location ->
+      ignore (normalize_store_value location Val.bot);
+      observe_write ~weak location) locs
 end
 
 module Table = MapDom.MakeCPO (Node) (Mem)

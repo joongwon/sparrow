@@ -16,6 +16,14 @@ module Make (A:CPO) (B:CPO) =
 struct
   type t = A.t * B.t [@@deriving compare]
 
+  (* Representation identity (HashconsKey): componentwise. *)
+  let () =
+    let a = HashconsKey.find A.compare and b = HashconsKey.find B.compare in
+    HashconsKey.register compare {
+      HashconsKey.equal = (fun ((a1,b1) as x) ((a2,b2) as y) ->
+        x == y || (a.HashconsKey.equal a1 a2 && b.HashconsKey.equal b1 b2));
+      hash = (fun (a1,b1) -> HashconsKey.mix (a.HashconsKey.hash a1) (b.HashconsKey.hash b1)) }
+
   let make a b = (a,b)
 
   let fst (a,_) = a
@@ -55,6 +63,21 @@ end
 module Make5 (A:CPO) (B:CPO) (C:CPO) (D:CPO) (E:CPO) =
 struct
   type t = A.t * B.t * C.t * D.t * E.t [@@deriving compare]
+
+  (* Representation identity (HashconsKey): componentwise. *)
+  let () =
+    let a = HashconsKey.find A.compare and b = HashconsKey.find B.compare
+    and c = HashconsKey.find C.compare and d = HashconsKey.find D.compare
+    and e = HashconsKey.find E.compare in
+    let mix = HashconsKey.mix in
+    HashconsKey.register compare {
+      HashconsKey.equal = (fun ((a1,b1,c1,d1,e1) as x) ((a2,b2,c2,d2,e2) as y) ->
+        x == y
+        || (a.HashconsKey.equal a1 a2 && b.HashconsKey.equal b1 b2 && c.HashconsKey.equal c1 c2
+            && d.HashconsKey.equal d1 d2 && e.HashconsKey.equal e1 e2));
+      hash = (fun (a1,b1,c1,d1,e1) ->
+        mix (mix (mix (mix (a.HashconsKey.hash a1) (b.HashconsKey.hash b1)) (c.HashconsKey.hash c1))
+               (d.HashconsKey.hash d1)) (e.HashconsKey.hash e1)) }
 
   let fst (a,_,_,_,_) = a
   let snd (_,b,_,_,_) = b

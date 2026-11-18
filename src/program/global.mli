@@ -11,7 +11,7 @@
 (** Global information *)
 
 type t = {
-  file : Cil.file;
+  file : Sparrow_cil.file;
   icfg : InterCfg.t;
   callgraph : CallGraph.t;
   dump : BasicDom.Dump.t;
@@ -19,7 +19,13 @@ type t = {
   table : ItvDom.Table.t;
 }
 
-val init : Cil.file -> t
+val init : Sparrow_cil.file -> t
+
+(** module (translation-unit) variant: no main required *)
+val init_module : Sparrow_cil.file -> t
+
+(** stable (function-local) node ids *)
+val init_module_stable : Sparrow_cil.file -> t
 
 val is_rec : InterCfg.pid -> t -> bool
 val is_undef : InterCfg.pid -> t -> bool
