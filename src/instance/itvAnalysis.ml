@@ -144,7 +144,7 @@ let inspect_aexp_bo_with ~eval ~eval_lv ~eval_copy_length ~make_query aexp mem
     | Strcpy (e1, e2, loc) ->
         let v1 = eval e1 in
         let v2 = eval e2 in
-        let v2 = Val.of_itv (ItvSemantics.null_of mem v2) in
+        let v2 = Val.of_itv (ItvSem.null_of mem v2) in
         let lst = check_bo v1 (Some v2) in
         List.map
           (fun (status, a, desc) -> make_query ~loc ~allocsite:a ~status ~desc)
@@ -152,8 +152,8 @@ let inspect_aexp_bo_with ~eval ~eval_lv ~eval_copy_length ~make_query aexp mem
     | Strcat (e1, e2, loc) ->
         let v1 = eval e1 in
         let v2 = eval e2 in
-        let np1 = ItvSemantics.null_of mem v1 in
-        let np2 = ItvSemantics.null_of mem v2 in
+        let np1 = ItvSem.null_of mem v1 in
+        let np2 = ItvSem.null_of mem v2 in
         let np = Val.of_itv (Itv.plus np1 np2) in
         let lst = check_bo v1 (Some np) in
         List.map
@@ -435,38 +435,6 @@ let do_analysis : Global.t -> Global.t * Table.t * Table.t * Report.query list =
     }
   in
   cond !Options.marshal_in marshal_in (Analysis.perform spec) global
-  |> opt !Options.marshal_out marshal_out
-  |> StepManager.stepf true "Generate Alarm Report"
-       (fun (global, inputof, outputof) ->
-         (global, inputof, outputof, inspect_alarm global spec inputof))
-
-let do_analysis_with_sparse_analysis_hook analysis_hook transfer_hook global =
-  let _ = prerr_memory_usage () in
-  let locset = get_locset global.mem in
-  let locset_fs = PartialFlowSensitivity.select global locset in
-  let unsound_lib = UnsoundLib.collect global in
-  let unsound_update = !Options.bugfinder >= 2 in
-  let unsound_bitwise = !Options.bugfinder >= 1 in
-  let spec =
-    {
-      Spec.empty with
-      Spec.locset;
-      Spec.locset_fs;
-      premem = global.mem;
-      Spec.unsound_lib;
-      Spec.unsound_update;
-      Spec.unsound_bitwise;
-    }
-  in
-  let step node input =
-    ItvSem.with_transfer_hook transfer_hook (fun () ->
-        ItvSem.run AbsSem.Strong spec node input)
-  in
-  let visit rows dug node state =
-    analysis_hook spec dug node state (fun () ->
-        Analysis.analyze_node rows step dug node state)
-  in
-  cond !Options.marshal_in marshal_in (Analysis.perform_with visit spec) global
   |> opt !Options.marshal_out marshal_out
   |> StepManager.stepf true "Generate Alarm Report"
        (fun (global, inputof, outputof) ->

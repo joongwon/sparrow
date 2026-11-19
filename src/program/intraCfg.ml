@@ -1111,13 +1111,8 @@ let get_main_dec :
     None globals
 
 let process_fundecl :
-    Sparrow_cil.fundec ->
-    Sparrow_cil.fundec ->
-    Sparrow_cil.location ->
-    node ->
-    t ->
-    node * t =
- fun fd fundecl loc node g ->
+    Sparrow_cil.fundec -> Sparrow_cil.location -> node -> t -> node * t =
+ fun fundecl loc node g ->
   let new_node = Node.make () in
   let cmd = Cmd.Cfalloc ((Var fundecl.svar, NoOffset), fundecl, loc) in
   let g = add_edge node new_node (add_cmd new_node cmd g) in
@@ -1477,7 +1472,7 @@ let generate_global_chain ?(defined_extern_storage = true) globals fd =
             acc
       | Sparrow_cil.GFun (function_, location) ->
           emit ~storage:false
-            (fun node g -> process_fundecl fd function_ location node g)
+            (fun node g -> process_fundecl function_ location node g)
             acc
       | Sparrow_cil.GType _ | Sparrow_cil.GCompTag _
       | Sparrow_cil.GCompTagDecl _ | Sparrow_cil.GEnumTag _

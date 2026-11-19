@@ -4,7 +4,7 @@
    queries of strcpy/memcpy/... (AlarmExp), the string-argument allocations of
    a call (IntraCfg.transform_string_allocs), malloc/alloca allocations, the
    upstream exit/abort no-return set, and the library models of an undefined
-   callee (ItvModelSemantics and the other domains).  The merge of several
+   callee (ItvSem and the other domains).  The merge of several
    translation units renames every global that does not take part in the
    merge of externally visible names (a static, or a GNU [extern inline] body
    such as glibc's fortify wrapper [strcpy]) when an earlier unit already uses

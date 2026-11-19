@@ -146,15 +146,15 @@ let inspect_aexp :
     | Strcpy (e1, e2, loc) ->
         let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 ptrmem in
         let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 ptrmem in
-        let v2 = ItvDom.Val.of_itv (ItvSemantics.null_of ptrmem v2) in
+        let v2 = ItvDom.Val.of_itv (ItvSem.null_of ptrmem v2) in
         check packconf pid v1 (Some v2) None ptrmem mem
         |> List.map (fun (status, a, desc) ->
             { node; exp = aexp; loc; allocsite = a; status; desc; src = None })
     | Strcat (e1, e2, loc) ->
         let v1 = ItvSem.eval (InterCfg.Node.get_pid node) e1 ptrmem in
         let v2 = ItvSem.eval (InterCfg.Node.get_pid node) e2 ptrmem in
-        let np1 = ItvSemantics.null_of ptrmem v1 in
-        let np2 = ItvSemantics.null_of ptrmem v2 in
+        let np1 = ItvSem.null_of ptrmem v1 in
+        let np2 = ItvSem.null_of ptrmem v2 in
         let np = ItvDom.Val.of_itv (Itv.plus np1 np2) in
         check packconf pid v1 (Some np) None ptrmem mem
         |> List.map (fun (status, a, desc) ->

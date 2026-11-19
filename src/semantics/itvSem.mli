@@ -15,16 +15,6 @@ include
      and type Dom.A.t = BasicDom.Loc.t
      and type Dom.PowA.t = BasicDom.PowLoc.t
 
-val with_transfer_hook :
-  (AbsSem.update_mode ->
-  Spec.t ->
-  BasicDom.Node.t ->
-  Dom.t ->
-  Global.t ->
-  (Dom.t * Global.t) option) ->
-  (unit -> 'a) ->
-  'a
-
 val eval_lv :
   ?spec:Spec.t ->
   BasicDom.Proc.t ->
@@ -43,3 +33,6 @@ val eval_array_alloc :
   ?spec:Spec.t -> BasicDom.Node.t -> Sparrow_cil.exp -> Dom.t -> ItvDom.Val.t
 
 val eval_string_alloc : BasicDom.Node.t -> string -> Dom.t -> ItvDom.Val.t
+
+(** The null position seen from a pointer value; unknown is [0, +oo]. *)
+val null_of : ItvDom.Mem.t -> ItvDom.Val.t -> Itv.t

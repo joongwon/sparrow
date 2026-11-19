@@ -243,7 +243,7 @@ let add_cstring global cond_node cfg feat =
   PowLoc.fold
     (fun l feat ->
       let v = Mem.lookup (PowLoc.singleton l) global.mem in
-      let nullpos = ItvSemantics.null_of global.mem v in
+      let nullpos = ItvSem.null_of global.mem v in
       let locset =
         Val.pow_loc_of_val (Mem.lookup (PowLoc.singleton l) global.mem)
       in
