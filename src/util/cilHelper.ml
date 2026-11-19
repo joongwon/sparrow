@@ -49,19 +49,19 @@ and s_exp_paren : exp -> string =
 and s_const : constant -> string = fun c -> tostring (d_const () c)
 and s_type : typ -> string = fun typ -> tostring (d_type () typ)
 and s_stmt : stmt -> string = fun s -> tostring (d_stmt () s)
-and s_lv : lval -> string = fun (lh, offset) -> s_lhost lh ^ s_offset offset
 
-and s_lhost : lhost -> string = function
-  | Var vi -> (if vi.vglob then "@" else "") ^ vi.vname
-  | Mem e -> "*" ^ s_exp_paren2 e
-
-and s_exp_paren2 : exp -> string =
- fun e ->
-  match e with
-  | Lval (_, NoOffset) -> s_exp e
-  | Lval _ | UnOp _ | BinOp _ | Question _ | CastE _ | Real _ | Imag _ ->
-      "(" ^ s_exp e ^ ")"
-  | _ -> s_exp e
+and s_lv : lval -> string =
+ fun (lh, offset) ->
+  match lh with
+  | Var vi -> (if vi.vglob then "@" else "") ^ vi.vname ^ s_offset offset
+  | Mem e ->
+      begin match offset with
+      | NoOffset -> "*" ^ s_exp_paren e
+      | Field (fi, offset') ->
+          s_exp_paren e ^ "->" ^ fi.fname ^ s_offset offset'
+      | Index (e', offset') ->
+          "(*" ^ s_exp_paren e ^ ")[" ^ s_exp e' ^ "]" ^ s_offset offset'
+      end
 
 and s_offset : offset -> string = function
   | NoOffset -> ""

@@ -16,8 +16,6 @@ val s_const : Sparrow_cil.constant -> string
 val s_type : Sparrow_cil.typ -> string
 val s_stmt : Sparrow_cil.stmt -> string
 val s_lv : Sparrow_cil.lval -> string
-val s_lhost : Sparrow_cil.lhost -> string
-val s_exp_paren2 : Sparrow_cil.exp -> string
 val s_offset : Sparrow_cil.offset -> string
 val s_uop : Sparrow_cil.unop -> string
 val s_bop : Sparrow_cil.binop -> string
