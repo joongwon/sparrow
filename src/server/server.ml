@@ -20,6 +20,7 @@ open ItvDom
 let state_path = ref ""
 let addr = ref "127.0.0.1"
 let port = ref 8080
+let dot_path = ref "dot"
 
 (* ------------------------------------------------------------------ *)
 (* The loaded state and the indexes built from it                      *)
@@ -28,6 +29,8 @@ type loaded = {
   state : AnalysisState.t;
   nodes : (string, InterCfg.Node.t) Hashtbl.t;  (* by Node.to_string *)
   procs : (string * int) list;  (* name, #nodes; sorted by name *)
+  node_status : (string, Report.status) Hashtbl.t;
+      (* the worst status of a node's alarms: bot, then unproven, then proven *)
 }
 
 let load path =
@@ -44,12 +47,25 @@ let load path =
         (pid, List.length (IntraCfg.nodesof (InterCfg.cfgof icfg pid))))
     |> List.sort compare
   in
+  let rank = function
+    | Report.BotAlarm -> 2
+    | Report.UnProven -> 1
+    | Report.Proven -> 0
+  in
+  let node_status = Hashtbl.create 4096 in
+  List.iter
+    (fun q ->
+      let key = InterCfg.Node.to_string q.Report.node in
+      match Hashtbl.find_opt node_status key with
+      | Some s when rank s >= rank q.Report.status -> ()
+      | _ -> Hashtbl.replace node_status key q.Report.status)
+    state.AnalysisState.alarms;
   Printf.eprintf "loaded %s in %.2fs: %d procedures, %d nodes, %d alarms\n%!"
     path
     (Unix.gettimeofday () -. t0)
     (List.length procs) (Hashtbl.length nodes)
     (List.length state.AnalysisState.alarms);
-  { state; nodes; procs }
+  { state; nodes; procs; node_status }
 
 (* Location name -> the nodes whose output (definitions) and input (uses)
    hold it.  Built on first use: it walks every memory of both tables. *)
@@ -205,6 +221,125 @@ let alarm_json index (q : Report.query) =
     ]
 
 (* ------------------------------------------------------------------ *)
+(* A procedure's CFG as SVG, laid out by Graphviz                      *)
+
+(* The SVG [g] element of a node has the node's id as its [id] and the
+   classes [entry], [exit], [call] and [alarm-<status>] that apply. *)
+
+let dot_string s =
+  let b = Buffer.create (String.length s + 8) in
+  Buffer.add_char b '"';
+  String.iter
+    (function
+      | '"' -> Buffer.add_string b "\\\""
+      | '\\' -> Buffer.add_string b "\\\\"
+      | '\n' | '\r' | '\t' -> Buffer.add_char b ' '
+      | c -> Buffer.add_char b c)
+    s;
+  Buffer.add_char b '"';
+  Buffer.contents b
+
+let max_label = 72
+
+(* Above this many nodes, Graphviz's network simplex and crossing
+   minimization are cut short: luaV_execute (3511 nodes) takes 1.3s instead
+   of 33s, with a layout as readable. *)
+let large_cfg = 500
+
+let shorten s =
+  if String.length s <= max_label then s
+  else String.sub s 0 (max_label - 3) ^ "..."
+
+let cfg_dot l name =
+  let icfg = l.state.AnalysisState.global.Global.icfg in
+  let cfg = InterCfg.cfgof icfg name in
+  let id n = InterCfg.Node.to_string (InterCfg.Node.make name n) in
+  let nodes = IntraCfg.nodesof cfg in
+  let b = Buffer.create 65536 in
+  Printf.bprintf b
+    "digraph cfg {\n\
+     graph [rankdir=TB, nodesep=0.25, ranksep=0.3, bgcolor=transparent%s];\n\
+     node [shape=box, style=rounded, fontname=monospace, fontsize=10, \
+     height=0.25, margin=\"0.08,0.03\"];\n\
+     edge [arrowsize=0.6];\n"
+    (if List.length nodes > large_cfg then
+       ", nslimit=0.5, nslimit1=0.5, mclimit=0.1"
+     else "");
+  List.iter
+    (fun n ->
+      let node = InterCfg.Node.make name n in
+      let classes =
+        List.filter_map Fun.id
+          [
+            (if IntraCfg.Node.equal n IntraCfg.Node.entry then Some "entry"
+             else None);
+            (if IntraCfg.Node.equal n IntraCfg.Node.exit then Some "exit"
+             else None);
+            (if InterCfg.is_callnode node icfg then Some "call" else None);
+            Option.map
+              (fun s -> "alarm-" ^ status_string s)
+              (Hashtbl.find_opt l.node_status (id n));
+          ]
+      in
+      let label =
+        match IntraCfg.find_cmd n cfg with
+        | IntraCfg.Cmd.Cskip -> IntraCfg.Node.to_string n
+        | cmd ->
+            IntraCfg.Node.to_string n ^ ": " ^ shorten (IntraCfg.Cmd.to_string cmd)
+      in
+      Printf.bprintf b "%s [id=%s, class=%s, label=%s];\n" (dot_string (id n))
+        (dot_string (id n))
+        (dot_string (String.concat " " classes))
+        (dot_string label);
+      List.iter
+        (fun s -> Printf.bprintf b "%s -> %s;\n" (dot_string (id n)) (dot_string (id s)))
+        (IntraCfg.succ n cfg))
+    nodes;
+  Buffer.add_string b "}\n";
+  Buffer.contents b
+
+let run_dot source =
+  let tmp = Filename.temp_file "sparrow-cfg" ".dot" in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove tmp with Sys_error _ -> ())
+    (fun () ->
+      Out_channel.with_open_bin tmp (fun oc -> output_string oc source);
+      let ic = Unix.open_process_args_in !dot_path [| !dot_path; "-Tsvg"; tmp |] in
+      let svg = In_channel.input_all ic in
+      match Unix.close_process_in ic with
+      | Unix.WEXITED 0 -> svg
+      | Unix.WEXITED code ->
+          failwith
+            (Printf.sprintf
+               "%s exited with %d (is Graphviz installed? see -dot)" !dot_path
+               code)
+      | Unix.WSIGNALED n | Unix.WSTOPPED n ->
+          failwith (Printf.sprintf "%s killed by signal %d" !dot_path n))
+
+let cfg_lock = Mutex.create ()
+let cfg_cache : (string, string) Hashtbl.t = Hashtbl.create 64
+
+(* Layouts are cached; two requests for one procedure may both lay it out. *)
+let cfg_svg l name =
+  let cached =
+    Mutex.lock cfg_lock;
+    let r = Hashtbl.find_opt cfg_cache name in
+    Mutex.unlock cfg_lock;
+    r
+  in
+  match cached with
+  | Some svg -> svg
+  | None ->
+      let t0 = Unix.gettimeofday () in
+      let svg = run_dot (cfg_dot l name) in
+      Printf.eprintf "cfg %s laid out in %.2fs\n%!" name
+        (Unix.gettimeofday () -. t0);
+      Mutex.lock cfg_lock;
+      Hashtbl.replace cfg_cache name svg;
+      Mutex.unlock cfg_lock;
+      svg
+
+(* ------------------------------------------------------------------ *)
 (* Handlers                                                            *)
 
 exception Not_found_ of string
@@ -230,13 +365,20 @@ let json_response json =
     ~headers:[ ("Content-Type", "application/json; charset=utf-8") ]
     (Ok (J.to_string json))
 
-let handle f req =
-  try json_response (f req) with
+let handle_with respond f req =
+  try respond (f req) with
   | Not_found_ what -> H.Response.make_string (Error (404, what ^ " not found"))
   | H.Response.Bad_req (code, msg) -> H.Response.make_string (Error (code, msg))
   | e ->
       H.Response.make_string
         (Error (500, "internal error: " ^ Printexc.to_string e))
+
+let handle f = handle_with json_response f
+
+let svg_response svg =
+  H.Response.make_string
+    ~headers:[ ("Content-Type", "image/svg+xml; charset=utf-8") ]
+    (Ok svg)
 
 let find_node l id =
   match Hashtbl.find_opt l.nodes id with
@@ -434,6 +576,19 @@ let loc l req =
       ("uses", entries index.uses l.state.AnalysisState.inputof);
     ]
 
+(* [format=dot] gives the Graphviz source instead of the layout *)
+let cfg l req =
+  let name = required req "name" in
+  if not (InterCfg.mem_cfg name l.state.AnalysisState.global.Global.icfg) then
+    raise (Not_found_ ("procedure " ^ name));
+  match param_or req "format" "svg" with
+  | "svg" -> svg_response (cfg_svg l name)
+  | "dot" ->
+      H.Response.make_string
+        ~headers:[ ("Content-Type", "text/vnd.graphviz; charset=utf-8") ]
+        (Ok (cfg_dot l name))
+  | f -> raise (H.Response.Bad_req (400, "format: svg or dot, not " ^ f))
+
 let premem l req =
   let q = param_or req "q" "" in
   let offset = int_param req "offset" 0 and limit = int_param req "limit" 500 in
@@ -475,6 +630,9 @@ let () =
     [
       ("-addr", Arg.Set_string addr, "ADDR Address to listen on (default: 127.0.0.1)");
       ("-port", Arg.Set_int port, "PORT Port to listen on (default: 8080)");
+      ( "-dot",
+        Arg.Set_string dot_path,
+        "PATH Graphviz dot, to lay out CFGs (default: dot, from PATH)" );
     ]
     (fun f ->
       if !state_path = "" then state_path := f
@@ -503,6 +661,9 @@ let () =
   get "loc" loc;
   get "premem" premem;
   get "alarms" alarms;
+  H.add_route_handler ~meth:`GET server
+    H.Route.(exact "api" @/ exact "cfg" @/ return)
+    (handle_with Fun.id (cfg l));
   H.add_route_handler ~meth:`GET server H.Route.return (fun _ ->
       H.Response.make_string
         ~headers:[ ("Content-Type", "text/html; charset=utf-8") ]

@@ -56,7 +56,42 @@ input, select { font: inherit; padding: 5px 8px; border: 1px solid var(--border)
 .list .item { padding: 6px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .list .item:hover { background: var(--accent-bg); }
 .list .item .sub { color: var(--muted); font-size: 12px; }
-main { overflow: auto; padding: 16px 20px; min-width: 0; }
+main { display: grid; grid-template-columns: var(--split, 50%) 6px minmax(0, 1fr);
+  min-width: 0; min-height: 0; }
+.pane { overflow: auto; min-width: 0; min-height: 0; }
+#info-pane { padding: 16px 20px; }
+#gutter { cursor: col-resize; background: var(--border); }
+#gutter:hover, #gutter.drag { background: var(--accent); }
+#graph-pane { display: flex; flex-direction: column; overflow: hidden; }
+.graph-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.graph-bar .title { font-weight: 600; margin-right: auto; word-break: break-all; }
+.graph-bar button { font: inherit; font-size: 13px; padding: 2px 9px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer; }
+.graph-bar button:hover { border-color: var(--accent); }
+.legend { display: flex; gap: 10px; color: var(--muted); font-size: 12px; padding: 4px 10px;
+  border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px;
+  vertical-align: -1px; border: 2px solid var(--muted); }
+.legend i.call { background: var(--code); }
+.legend i.unproven { border-color: var(--bad); }
+.legend i.proven { border-color: var(--good); }
+.legend i.bot { border-color: var(--warn); }
+.legend i.sel { border-color: var(--accent); background: var(--accent-bg); }
+#graph { flex: 1; overflow: auto; min-height: 0; padding: 12px; }
+#graph svg { display: block; }
+#graph g.node { cursor: pointer; }
+#graph g.node path, #graph g.node polygon, #graph g.node ellipse { fill: var(--panel); stroke: var(--muted); }
+#graph g.node text { fill: var(--text); }
+#graph g.node.call path, #graph g.node.call polygon { fill: var(--code); }
+#graph g.node.entry path, #graph g.node.exit path { fill: var(--accent-bg); }
+#graph g.node.alarm-unproven path { stroke: var(--bad); stroke-width: 2; }
+#graph g.node.alarm-proven path { stroke: var(--good); stroke-width: 2; }
+#graph g.node.alarm-bot path { stroke: var(--warn); stroke-width: 2; }
+#graph g.node:hover path { stroke: var(--accent); }
+#graph g.node.sel path { stroke: var(--accent); stroke-width: 3; fill: var(--accent-bg); }
+#graph g.edge path { stroke: var(--muted); }
+#graph g.edge polygon { fill: var(--muted); stroke: var(--muted); }
 h2 { font-size: 18px; margin: 0 0 4px; word-break: break-all; }
 h3 { font-size: 14px; margin: 18px 0 6px; }
 .meta { color: var(--muted); margin-bottom: 10px; }
@@ -82,7 +117,9 @@ tr.click:hover td { background: var(--accent-bg); }
   .layout { grid-template-columns: 1fr; height: auto; }
   nav { max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--border); }
   .cols { grid-template-columns: 1fr; }
-  main { padding: 12px 16px; }
+  main { grid-template-columns: 1fr; grid-template-rows: 60vh auto; }
+  #gutter { display: none; }
+  #info-pane { padding: 12px 16px; }
 }
 </style>
 </head>
@@ -98,7 +135,25 @@ tr.click:hover td { background: var(--accent-bg); }
     <div class="side-tools" id="side-tools"></div>
     <div class="list" id="list"></div>
   </nav>
-  <main id="main"><div class="empty">Pick a procedure, an alarm or a location.</div></main>
+  <main id="main">
+    <section class="pane" id="graph-pane">
+      <div class="graph-bar">
+        <span class="title mono" id="graph-title">no procedure</span>
+        <button id="zoom-out" title="zoom out">−</button>
+        <button id="zoom-fit" title="fit the width">fit</button>
+        <button id="zoom-one" title="actual size">1:1</button>
+        <button id="zoom-in" title="zoom in (or ctrl + wheel)">+</button>
+      </div>
+      <div class="legend">
+        <span><i class="call"></i>call</span><span><i class="unproven"></i>unproven alarm</span>
+        <span><i class="bot"></i>bot alarm</span><span><i class="proven"></i>proven</span>
+        <span><i class="sel"></i>selected</span>
+      </div>
+      <div id="graph"><div class="empty">Pick a procedure to see its CFG.</div></div>
+    </section>
+    <div id="gutter" title="drag to resize"></div>
+    <section class="pane" id="info-pane"><div class="empty">Pick a procedure, an alarm or a location.</div></section>
+  </main>
 </div>
 <script>
 "use strict";
@@ -192,28 +247,136 @@ async function loadLocs() {
   } catch (e) { fail(list, e); }
 }
 
-/* ---------- main views ---------- */
+/* ---------- graph pane: the CFG of one procedure ---------- */
+const graph = { proc: null, svg: null, base: null, scale: 1, selected: null, loading: null };
+
+function sanitize(svg) {
+  for (const bad of svg.querySelectorAll("script, foreignObject")) bad.remove();
+  for (const e of svg.querySelectorAll("*"))
+    for (const a of [...e.attributes]) if (/^on/i.test(a.name)) e.removeAttribute(a.name);
+  return svg;
+}
+function applyScale() {
+  if (!graph.svg) return;
+  graph.svg.setAttribute("width", graph.base.w * graph.scale);
+  graph.svg.setAttribute("height", graph.base.h * graph.scale);
+}
+function zoom(factor, keep) {
+  if (!graph.svg) return;
+  const box = $("graph");
+  /* keep the point at the pane's centre in place */
+  const cx = (box.scrollLeft + box.clientWidth / 2) / graph.scale;
+  const cy = (box.scrollTop + box.clientHeight / 2) / graph.scale;
+  graph.scale = Math.min(4, Math.max(0.05, factor));
+  applyScale();
+  if (keep !== false) {
+    box.scrollLeft = cx * graph.scale - box.clientWidth / 2;
+    box.scrollTop = cy * graph.scale - box.clientHeight / 2;
+  }
+}
+const fitScale = () => Math.min(1, ($("graph").clientWidth - 24) / graph.base.w);
+$("zoom-in").addEventListener("click", () => zoom(graph.scale * 1.25));
+$("zoom-out").addEventListener("click", () => zoom(graph.scale / 1.25));
+$("zoom-one").addEventListener("click", () => zoom(1));
+$("zoom-fit").addEventListener("click", () => zoom(fitScale(), false));
+$("graph").addEventListener("click", (e) => {
+  const g = e.target.closest && e.target.closest("g.node");
+  if (g && g.id) go("node", g.id);
+});
+
+/* show [name]'s CFG; resolves once it is in the pane */
+function showGraph(name) {
+  if (graph.proc === name) return graph.loading || Promise.resolve();
+  graph.proc = name; graph.svg = null; graph.selected = null;
+  $("graph-title").replaceChildren(link(name, "proc", name));
+  $("graph").replaceChildren(el("div", { class: "empty" }, "laying out " + name + "…"));
+  graph.loading = (async () => {
+    try {
+      const r = await fetch("/api/cfg?" + new URLSearchParams({ name }));
+      if (!r.ok) throw new Error(await r.text());
+      const text = await r.text();
+      if (graph.proc !== name) return;            /* another procedure was picked meanwhile */
+      const doc = new DOMParser().parseFromString(text, "image/svg+xml");
+      const svg = doc.documentElement;
+      if (svg.nodeName !== "svg") throw new Error("the layout is not SVG");
+      graph.svg = document.importNode(sanitize(svg), true);
+      const vb = graph.svg.viewBox.baseVal;
+      graph.base = { w: vb.width, h: vb.height };
+      $("graph").replaceChildren(graph.svg);
+      /* readable from the start: fit the width, but not below 75% */
+      graph.scale = 1;
+      zoom(Math.min(1, Math.max(0.75, fitScale())), false);
+      centerOn(graph.svg.querySelector("g.node.entry"));
+    } catch (e) { if (graph.proc === name) fail($("graph"), e); }
+    finally { graph.loading = null; }
+  })();
+  return graph.loading;
+}
+/* scroll the pane so that [g] is in view, centred horizontally */
+function centerOn(g, onlyIfHidden) {
+  if (!g) return;
+  const box = $("graph"), r = g.getBoundingClientRect(), b = box.getBoundingClientRect();
+  if (onlyIfHidden && r.left >= b.left && r.right <= b.right && r.top >= b.top && r.bottom <= b.bottom) return;
+  box.scrollLeft += r.left - b.left - (b.width - r.width) / 2;
+  box.scrollTop += r.top - b.top - (onlyIfHidden ? (b.height - r.height) / 2 : 12);
+}
+$("graph").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey || !graph.svg) return;
+  e.preventDefault();
+  zoom(graph.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+}, { passive: false });
+function selectInGraph(id) {
+  if (!graph.svg) return;
+  if (graph.selected) graph.selected.classList.remove("sel");
+  const g = [...graph.svg.querySelectorAll("g.node")].find((x) => x.id === id);
+  graph.selected = g || null;
+  if (!g) return;
+  g.classList.add("sel");
+  centerOn(g, true);
+}
+
+/* the divider between the panes; its place is remembered per browser */
+(function () {
+  const main = $("main"), gutter = $("gutter");
+  const set = (pct) => main.style.setProperty("--split", Math.min(85, Math.max(15, pct)) + "%");
+  try { const v = parseFloat(localStorage.getItem("sparrow-split")); if (v) set(v); } catch (e) {}
+  gutter.addEventListener("mousedown", (e) => {
+    e.preventDefault(); gutter.classList.add("drag");
+    const r = main.getBoundingClientRect();
+    const move = (m) => set(((m.clientX - r.left) / r.width) * 100);
+    const up = () => {
+      gutter.classList.remove("drag");
+      removeEventListener("mousemove", move); removeEventListener("mouseup", up);
+      try { localStorage.setItem("sparrow-split", parseFloat(main.style.getPropertyValue("--split"))); } catch (e) {}
+    };
+    addEventListener("mousemove", move); addEventListener("mouseup", up);
+  });
+})();
+
+/* ---------- info pane ---------- */
+const info = () => $("info-pane");
 function cmdCell(cmd) {
   return [el("span", { class: "cmd mono" }, cmd.text), " ", el("span", { class: "sub mono" }, locText(cmd.location))];
 }
 async function showProc(name) {
-  const main = $("main");
-  main.replaceChildren(el("div", { class: "empty" }, "loading " + name + "…"));
+  showGraph(name);
+  const pane = info();
+  pane.replaceChildren(el("div", { class: "empty" }, "loading " + name + "…"));
   try {
     const p = await api("proc", { name });
     const rows = p.nodes.map((n) => el("tr", { class: "click", onclick: () => go("node", n.id) },
       el("td", { class: "mono" }, n.id),
       el("td", {}, el("span", { class: "cmd mono" }, n.cmd.text),
         n.callees && n.callees.length ? el("div", { class: "sub" }, "calls ", n.callees.join(", ")) : null),
-      el("td", { class: "mono" }, locText(n.cmd.location)),
       el("td", {}, n.input_size == null ? "–" : n.input_size),
       el("td", {}, n.output_size == null ? "–" : n.output_size)));
-    main.replaceChildren(
+    fill(pane,
       el("h2", { class: "mono" }, p.name),
-      el("div", { class: "meta" }, p.nodes.length + " nodes" + (p.undefined ? " · undefined procedure" : "")),
-      el("table", {}, el("thead", {}, el("tr", {}, ["node", "command", "location", "in", "out"].map((h) => el("th", {}, h)))),
+      el("div", { class: "meta" }, p.nodes.length + " nodes" + (p.undefined ? " · undefined procedure" : "")
+        + " · click a node in the graph or below"),
+      el("table", {}, el("thead", {}, el("tr", {}, ["node", "command", "in", "out"].map((h) => el("th", {}, h)))),
         el("tbody", {}, rows)));
-  } catch (e) { fail(main, e); }
+  } catch (e) { fail(pane, e); }
 }
 function cellView(c) {
   const parts = [];
@@ -230,7 +393,7 @@ function memoryPanel(title, nodeId, which, mem) {
   if (!mem) { box.append(el("h3", {}, title), el("div", { class: "empty" }, "no memory at this node")); return box; }
   const filter = el("input", { type: "search", placeholder: "filter locations" });
   const body = el("tbody");
-  const info = el("div", { class: "sub" });
+  const count = el("div", { class: "sub" });
   const more = el("div", { class: "more" });
   let shown = 0;
   const render = (m, append) => {
@@ -238,7 +401,7 @@ function memoryPanel(title, nodeId, which, mem) {
     for (const c of m.entries) body.append(el("tr", {},
       el("td", { class: "mono" }, link(c.loc, "loc", c.loc)), el("td", { class: "val" }, cellView(c))));
     shown += m.entries.length;
-    info.textContent = m.matching + " of " + m.size + " locations";
+    count.textContent = m.matching + " of " + m.size + " locations";
     more.replaceChildren(shown < m.matching ? el("a", { onclick: () => fetchMore(shown) }, "show more") : "");
   };
   const fetchMore = async (offset) => {
@@ -249,21 +412,23 @@ function memoryPanel(title, nodeId, which, mem) {
   };
   filter.addEventListener("input", debounce(() => fetchMore(0), 200));
   render(mem, false);
-  box.append(el("h3", {}, title), filter, info,
+  box.append(el("h3", {}, title), filter, count,
     el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "location"), el("th", {}, "value"))), body), more);
   return box;
 }
 async function showNode(id) {
-  const main = $("main");
-  main.replaceChildren(el("div", { class: "empty" }, "loading " + id + "…"));
+  const pane = info();
+  pane.replaceChildren(el("div", { class: "empty" }, "loading " + id + "…"));
   try {
     const n = await api("node", { id, limit: 500 });
+    showGraph(n.proc).then(() => selectInGraph(id));
     const proc = await api("proc", { name: n.proc });
     const me = proc.nodes.find((x) => x.id === id) || {};
     const ids = (xs) => (xs && xs.length ? xs.map((x, i) => [i ? " " : "", nodeLink(x)]) : "–");
-    fill(main,
+    fill(pane,
       el("h2", { class: "mono" }, n.id),
-      el("div", { class: "meta" }, "in ", link(n.proc, "proc", n.proc), " · ", locText(n.cmd.location)),
+      el("div", { class: "meta" }, "in ", link(n.proc, "proc", n.proc),
+        locText(n.cmd.location) ? " · " + locText(n.cmd.location) : null),
       el("div", {}, el("span", { class: "cmd mono" }, n.cmd.text)),
       el("div", { class: "meta", style: "margin-top:8px" }, "pred ", ids(me.pred), " · succ ", ids(me.succ),
         me.callees && me.callees.length ? [" · calls ", me.callees.map((c, i) => [i ? ", " : "", link(c, "proc", c)])] : null),
@@ -273,12 +438,13 @@ async function showNode(id) {
           el("td", { class: "mono" }, a.exp),
           el("td", { class: "mono" }, a.allocsite || ""),
           el("td", { class: "mono" }, a.desc)))))] : null,
-      el("div", { class: "cols" }, memoryPanel("Input memory", id, "input", n.input), memoryPanel("Output memory", id, "output", n.output)));
-  } catch (e) { fail(main, e); }
+      memoryPanel("Input memory", id, "input", n.input),
+      memoryPanel("Output memory", id, "output", n.output));
+  } catch (e) { fail(pane, e); }
 }
 async function showLoc(name) {
-  const main = $("main");
-  main.replaceChildren(el("div", { class: "empty" }, "loading " + name + "… (the first lookup builds the index)"));
+  const pane = info();
+  pane.replaceChildren(el("div", { class: "empty" }, "loading " + name + "… (the first lookup builds the index)"));
   try {
     const l = await api("loc", { name, limit: 500 });
     const table = (part, title) => [
@@ -288,10 +454,10 @@ async function showLoc(name) {
           el("td", { class: "mono" }, nodeLink(n.id)),
           el("td", {}, cmdCell(n.cmd)),
           el("td", { class: "val" }, n.cell ? cellView(n.cell) : "–"))))) : el("div", { class: "empty" }, "none")];
-    fill(main, el("h2", { class: "mono" }, l.loc),
+    fill(pane, el("h2", { class: "mono" }, l.loc),
       el("div", { class: "meta" }, "defined in the output of " + l.defs.count + " nodes, used in the input of " + l.uses.count),
       table(l.defs, "Definitions (value after the node)"), table(l.uses, "Uses (value before the node)"));
-  } catch (e) { fail(main, e); }
+  } catch (e) { fail(pane, e); }
 }
 function route() {
   const h = location.hash.slice(1);
