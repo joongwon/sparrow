@@ -69,13 +69,6 @@ module Cmd = struct
     | Cassume of exp * location
     | Ccall of lval option * exp * exp list * location
     | Creturn of exp option * location
-    | Casm of
-        attributes
-        * string list
-        * (string option * string * lval) list
-        * (string option * string * exp) list
-        * string list
-        * location
     | Cskip
 
   let fromCilStmt : Sparrow_cil.stmtkind -> t =
@@ -104,7 +97,6 @@ module Cmd = struct
     | Cif (e, b1, b2, loc) -> "if"
     | Cassume (e, loc) -> "assume(" ^ s_exp e ^ ")"
     | CLoop _ -> "loop"
-    | Casm _ -> "asm"
     | Cskip -> "skip"
 
   let location_of : t -> Sparrow_cil.location =
@@ -125,7 +117,6 @@ type node = Node.t
 type cmd = Cmd.t
 
 module G = Graph.Persistent.Digraph.ConcreteBidirectional (Node)
-
 module Merge = Graph.Merge.P (G)
 module Topo = Graph.Topological.Make (G)
 module Scc = Graph.Components.Make (G)
@@ -175,7 +166,6 @@ let empty : Sparrow_cil.fundec -> t =
 let get_pid : t -> string = fun g -> g.fd.svar.vname
 let get_fd : t -> Sparrow_cil.fundec = fun g -> g.fd
 let get_formals : t -> Sparrow_cil.varinfo list = fun g -> g.fd.sformals
-
 let get_scc_list : t -> node list list = fun g -> g.scc_list
 
 let children_of_dom_tree node g =
@@ -344,10 +334,10 @@ let remove_empty_nodes : t -> t =
         find_cmd n g = Cmd.Cskip
         && List.length (succ n g) = 1
         && List.length (pred n g) = 1
-      then (
+      then
         let p = List.nth (pred n g) 0 in
         let s = List.nth (succ n g) 0 in
-        g |> remove_node n |> add_edge p s)
+        g |> remove_node n |> add_edge p s
       else g)
     g g
 
@@ -364,7 +354,7 @@ let flatten_instructions : t -> t =
                 match i with
                 | Set (lv, e, loc, _) -> Cmd.Cset (lv, e, loc)
                 | Call (lvo, f, args, loc, _) -> Cmd.Ccall (lvo, f, args, loc)
-                | Asm (a, b, c, d, e, f) -> Cmd.Casm (a, b, c, d, e, f)
+                | Asm (a, b, c, d, e, f) -> Cmd.Cskip
                 | VarDecl _ -> Cmd.Cskip)
               instrs
           in
@@ -479,9 +469,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t =
           | e, l ->
               let empty_node, last_node = (Node.make (), Node.make ()) in
               let g = add_cmd empty_node Cmd.Cskip g in
-              let node, g =
-                generate_sallocs l loc empty_node g
-              in
+              let node, g = generate_sallocs l loc empty_node g in
               let cmd = Cmd.Cset (lv, e, loc) in
               let g = add_cmd last_node cmd g in
               let g = add_edge node last_node g in
@@ -492,9 +480,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t =
           | e, l ->
               let empty_node, last_node = (Node.make (), Node.make ()) in
               let g = add_cmd empty_node Cmd.Cskip g in
-              let node, g =
-                generate_sallocs l loc empty_node g
-              in
+              let node, g = generate_sallocs l loc empty_node g in
               let cmd = Cmd.Cassume (e, loc) in
               let g = add_cmd last_node cmd g in
               let g = add_edge node last_node g in
@@ -522,9 +508,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t =
           | el, l ->
               let empty_node, last_node = (Node.make (), Node.make ()) in
               let g = add_cmd empty_node Cmd.Cskip g in
-              let node, g =
-                generate_sallocs l loc empty_node g
-              in
+              let node, g = generate_sallocs l loc empty_node g in
               let cmd = Cmd.Ccall (lv, f, el, loc) in
               let g = add_cmd last_node cmd g in
               let g = add_edge node last_node g in
@@ -535,9 +519,7 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t =
           | e, l ->
               let empty_node, last_node = (Node.make (), Node.make ()) in
               let g = add_cmd empty_node Cmd.Cskip g in
-              let node, g =
-                generate_sallocs l loc empty_node g
-              in
+              let node, g = generate_sallocs l loc empty_node g in
               let cmd = Cmd.Creturn (Some e, loc) in
               let g = add_cmd last_node cmd g in
               let g = add_edge node last_node g in
@@ -937,9 +919,7 @@ let generate_global_chain ?(defined_extern_storage = true) globals fd =
               process_gvardecl fd (Sparrow_cil.var variable) location node g)
             acc
       | Sparrow_cil.GFun (function_, location) ->
-          emit
-            (fun node g -> process_fundecl function_ location node g)
-            acc
+          emit (fun node g -> process_fundecl function_ location node g) acc
       | Sparrow_cil.GType _ | Sparrow_cil.GCompTag _
       | Sparrow_cil.GCompTagDecl _ | Sparrow_cil.GEnumTag _
       | Sparrow_cil.GEnumTagDecl _ | Sparrow_cil.GAsm _ | Sparrow_cil.GPragma _

@@ -44,13 +44,6 @@ module Cmd : sig
         * Sparrow_cil.exp list
         * Sparrow_cil.location
     | Creturn of Sparrow_cil.exp option * Sparrow_cil.location
-    | Casm of
-        Sparrow_cil.attributes
-        * string list
-        * (string option * string * Sparrow_cil.lval) list
-        * (string option * string * Sparrow_cil.exp) list
-        * string list
-        * Sparrow_cil.location
     | Cskip
 
   val fromCilStmt : Sparrow_cil.stmtkind -> t

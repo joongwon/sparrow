@@ -385,7 +385,6 @@ let run_cmd mode node cmd itvmem (mem, global) =
             (lookup retvar_set mem) mem
       | _ -> mem)
   | IntraCfg.Cmd.Cskip -> mem
-  | IntraCfg.Cmd.Casm _ -> mem
   | _ -> invalid_arg "taintSem.ml: run"
 
 let run mode spec node (mem, global) =

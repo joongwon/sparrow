@@ -992,7 +992,6 @@ let run :
           (mem, global)
       | _ -> (mem, global))
   | IntraCfg.Cmd.Cskip -> (mem, global)
-  | IntraCfg.Cmd.Casm _ -> (mem, global) (* Not supported *)
   | _ -> invalid_arg "itvSem.ml: run_cmd"
 
 let initial _ = Mem.bot
