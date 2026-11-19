@@ -14,6 +14,7 @@ depends: [
   "ppx_compare"
   "ppx_deriving"
   "goblint-cil"
+  "tiny_httpd"
 ]
 build: [
   ["dune" "subst"] {pinned}

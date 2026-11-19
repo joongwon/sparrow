@@ -32,4 +32,17 @@ val string_of_alarminfo : Itv.t -> Itv.t -> string
 val string_of_query : query -> string
 val partition : query list -> (part_unit, query list) BatMap.t
 val get : query list -> status -> query list
+
+(** The alarm counts {!print} reports: queries, alarm points (source
+    locations), and points proven, unproven (after the [-filter_*] options)
+    and involving bottom. *)
+type counts = {
+  queries : int;
+  points : int;
+  proven_points : int;
+  unproven_points : int;
+  bot_points : int;
+}
+
+val counts : Global.t -> query list -> counts
 val print : Global.t -> query list -> unit

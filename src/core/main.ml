@@ -44,6 +44,18 @@ let print_cfg : Global.t -> Global.t =
   |> Yojson.Safe.pretty_to_channel stdout;
   exit 0
 
+let marshal_state (global, inputof, outputof, alarms) =
+  AnalysisState.save !Options.marshal_state
+    {
+      AnalysisState.files = List.rev !Frontend.files;
+      global;
+      inputof;
+      outputof;
+      alarms;
+      counts = Report.counts global alarms;
+    };
+  (global, inputof, outputof, alarms)
+
 let finish t0 () =
   my_prerr_endline "Finished properly.";
   Profiler.report stdout;
@@ -89,6 +101,8 @@ let main () =
     |> Frontend.makeCFGinfo |> opt !Options.il print_il |> init_analysis
     |> print_pgm_info |> opt !Options.cfg print_cfg |> extract_feature
     |> StepManager.stepf true "Itv Sparse Analysis" ItvAnalysis.do_analysis
+    |> opt (!Options.marshal_state <> "")
+         (StepManager.stepf true "Marshal analysis state" marshal_state)
     |> case
          [ (!Options.oct, octagon_analysis); (!Options.taint, taint_analysis) ]
          (fun (global, _, _, alarm) -> (global, alarm))

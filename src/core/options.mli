@@ -89,6 +89,9 @@ val marshal_in : bool ref
 val marshal_out : bool ref
 val marshal_dir : string ref
 
+val marshal_state : string ref
+(** file for the final interval-analysis state ({!AnalysisState}); "" for none *)
+
 (** {2 Options lists} *)
 
 val opts : (string * Arg.spec * string) list

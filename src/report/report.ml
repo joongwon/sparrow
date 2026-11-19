@@ -206,22 +206,38 @@ let display_alarms title alarms_part =
         qs)
     alarms_part
 
+type counts = {
+  queries : int;
+  points : int;
+  proven_points : int;
+  unproven_points : int;
+  bot_points : int;
+}
+
+let counts global queries =
+  {
+    queries = List.length queries;
+    points = BatMap.cardinal (partition queries);
+    proven_points = BatSet.cardinal (get_proved_query_point queries);
+    unproven_points =
+      BatMap.cardinal (partition (get queries UnProven) |> alarm_filter global);
+    bot_points = BatMap.cardinal (partition (get queries BotAlarm));
+  }
+
 let print global queries =
   let all = partition queries in
   let unproven = partition (get queries UnProven) |> alarm_filter global in
-  let bot = partition (get queries BotAlarm) in
   if not !Options.noalarm then begin
     display_alarms "Alarms" (if !Options.show_all_query then all else unproven)
   end
   else ();
+  let c = counts global queries in
   prerr_endline "";
-  prerr_endline ("#queries                 : " ^ i2s (List.length queries));
-  prerr_endline ("#queries mod alarm point : " ^ i2s (BatMap.cardinal all));
-  prerr_endline
-    ("#proven                  : "
-    ^ i2s (BatSet.cardinal (get_proved_query_point queries)));
-  prerr_endline ("#unproven                : " ^ i2s (BatMap.cardinal unproven));
-  prerr_endline ("#bot-involved            : " ^ i2s (BatMap.cardinal bot))
+  prerr_endline ("#queries                 : " ^ i2s c.queries);
+  prerr_endline ("#queries mod alarm point : " ^ i2s c.points);
+  prerr_endline ("#proven                  : " ^ i2s c.proven_points);
+  prerr_endline ("#unproven                : " ^ i2s c.unproven_points);
+  prerr_endline ("#bot-involved            : " ^ i2s c.bot_points)
 
 let print_raw : bool -> query list -> unit =
  fun summary_only queries ->

@@ -16,4 +16,5 @@
   pyml
   ppx_compare
   ppx_deriving
-  goblint-cil))
+  goblint-cil
+  tiny_httpd))

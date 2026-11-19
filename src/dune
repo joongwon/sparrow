@@ -11,7 +11,7 @@
   (pps ppx_compare ppx_deriving.std))
  (flags :standard -w -7-27-32-33-34-38-39-9)
  (modules
-  (:standard \ main vis))
+  (:standard \ main vis server serverPage))
  (modules_without_implementation absDom absSem))
 
 (executables
@@ -20,3 +20,11 @@
  (libraries sparrow_lib findlib findlib.internal findlib.dynload dynlink)
  (flags :standard -w -7-27-32-33-34-38-39-9)
  (modules main vis))
+
+(executable
+ (name server)
+ (public_name sparrow-server)
+ (libraries sparrow_lib tiny_httpd threads.posix unix yojson findlib
+   findlib.internal findlib.dynload dynlink)
+ (flags :standard -w -7-27-32-33-34-38-39-9)
+ (modules server serverPage))

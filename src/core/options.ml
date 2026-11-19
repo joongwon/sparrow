@@ -92,6 +92,7 @@ let filter_allocsite = ref BatSet.empty
 let marshal_in = ref false
 let marshal_out = ref false
 let marshal_dir = ref "marshal"
+let marshal_state = ref ""
 
 (* Debug *)
 let debug = ref false
@@ -203,5 +204,9 @@ let opts =
     ( "-marshal_dir",
       Arg.String (fun s -> marshal_dir := s),
       "Directory where the marshaled data exists (default: marshal/)" );
+    ( "-marshal_state",
+      Arg.String (fun s -> marshal_state := s),
+      "<file> Write the final interval-analysis state (memories before and \
+       after each node, alarms) to <file>, for sparrow-server" );
     ("-int_overflow", Arg.Set int_overflow, "Consider integer overflow");
   ]
