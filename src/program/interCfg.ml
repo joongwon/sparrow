@@ -348,8 +348,7 @@ let gen_cfgs_stable_gproc gproc_of_file file =
    an assume or assignment there. Allocate optimization nodes above this CFG's
    own maximum, independently of the other functions and the traversal order.
    The whole-program optimizer and the global procedure of a unit built alone
-   stay as they are.  Restoring the counter also isolates synthetic global
-   provenance. *)
+   stay as they are. *)
 let optimize_il_stable icfg =
   map_cfgs
     (fun cfg ->
