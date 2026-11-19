@@ -25,11 +25,44 @@ let dot_path = ref "dot"
 (* ------------------------------------------------------------------ *)
 (* The loaded state and the indexes built from it                      *)
 
+(* A call edge: the call node (in the caller), the callee, and whether the
+   call goes through a function pointer.  The callees are those the call
+   graph resolves, and the functions called directly that have no body in
+   the program (library functions). *)
+type call = { site : InterCfg.Node.t; callee : string; indirect : bool }
+
+let calls_of icfg =
+  List.concat_map
+    (fun node ->
+      let direct =
+        match InterCfg.cmdof icfg node with
+        | IntraCfg.Cmd.Ccall
+            (_, Sparrow_cil.Lval (Sparrow_cil.Var f, Sparrow_cil.NoOffset), _, _)
+          ->
+            Some f.Sparrow_cil.vname
+        | _ -> None
+      in
+      let resolved =
+        InterCfg.ProcSet.elements (InterCfg.get_callees node icfg)
+      in
+      let library =
+        match direct with
+        | Some f when resolved = [] && InterCfg.is_undef f icfg -> [ f ]
+        | _ -> []
+      in
+      List.map
+        (fun callee -> { site = node; callee; indirect = direct <> Some callee })
+        resolved
+      @ List.map (fun callee -> { site = node; callee; indirect = false }) library)
+    (InterCfg.callnodesof icfg)
+
 type loaded = {
   state : AnalysisState.t;
   nodes : (string, InterCfg.Node.t) Hashtbl.t;  (* by Node.to_string *)
   procs : (string * int) list;  (* name, #nodes; sorted by name *)
   node_status : (string, Report.status) Hashtbl.t;
+  calls_from : (string, call list) Hashtbl.t;  (* by caller *)
+  calls_to : (string, call list) Hashtbl.t;  (* by callee *)
       (* the worst status of a node's alarms: bot, then unproven, then proven *)
 }
 
@@ -65,7 +98,17 @@ let load path =
     (Unix.gettimeofday () -. t0)
     (List.length procs) (Hashtbl.length nodes)
     (List.length state.AnalysisState.alarms);
-  { state; nodes; procs; node_status }
+  let calls_from = Hashtbl.create 1024 and calls_to = Hashtbl.create 1024 in
+  let add table key c =
+    Hashtbl.replace table key
+      (c :: Option.value (Hashtbl.find_opt table key) ~default:[])
+  in
+  List.iter
+    (fun c ->
+      add calls_from (InterCfg.Node.get_pid c.site) c;
+      add calls_to c.callee c)
+    (calls_of icfg);
+  { state; nodes; procs; node_status; calls_from; calls_to }
 
 (* Location name -> the nodes whose output (definitions) and input (uses)
    hold it.  Built on first use: it walks every memory of both tables. *)
@@ -456,6 +499,34 @@ let procs l req =
     |> List.map (fun (name, n) ->
         `Assoc [ ("name", `String name); ("nodes", `Int n) ]))
 
+(* [calls] grouped by [key] (the callee or the caller), by name *)
+let calls_json l ~key calls =
+  let icfg = l.state.AnalysisState.global.Global.icfg in
+  let groups = Hashtbl.create 16 in
+  List.iter
+    (fun c ->
+      let k = key c in
+      let sites, indirect =
+        Option.value (Hashtbl.find_opt groups k) ~default:([], false)
+      in
+      Hashtbl.replace groups k (c.site :: sites, indirect || c.indirect))
+    calls;
+  Hashtbl.fold (fun k v acc -> (k, v) :: acc) groups []
+  |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+  |> List.map (fun (name, (sites, indirect)) ->
+      `Assoc
+        [
+          ("name", `String name);
+          ("library", `Bool (InterCfg.is_undef name icfg));
+          ("indirect", `Bool indirect);
+          ( "sites",
+            `List
+              (List.sort_uniq InterCfg.Node.compare sites
+              |> List.map (fun n -> `String (InterCfg.Node.to_string n))) );
+        ])
+
+let calls_in table name = Option.value (Hashtbl.find_opt table name) ~default:[]
+
 (* A procedure's nodes from the entry, depth first with successors in id
    order, then whatever that walk does not reach. *)
 let proc l req =
@@ -511,6 +582,14 @@ let proc l req =
     [
       ("name", `String name);
       ("undefined", `Bool (Global.is_undef name l.state.AnalysisState.global));
+      ( "callers",
+        `List
+          (calls_json l
+             ~key:(fun c -> InterCfg.Node.get_pid c.site)
+             (calls_in l.calls_to name)) );
+      ( "callees",
+        `List (calls_json l ~key:(fun c -> c.callee) (calls_in l.calls_from name))
+      );
       ("nodes", `List (List.map node_json (order @ rest)));
     ]
 

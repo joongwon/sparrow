@@ -375,10 +375,23 @@ async function showProc(name) {
         n.callees && n.callees.length ? el("div", { class: "sub" }, "calls ", n.callees.join(", ")) : null),
       el("td", {}, n.input_size == null ? "–" : n.input_size),
       el("td", {}, n.output_size == null ? "–" : n.output_size)));
+    const sites = (xs) => xs.map((x, i) => [i ? " " : "", link(x.slice(x.lastIndexOf("-") + 1), "node", x)]);
+    const callTable = (calls, head, none) => calls.length
+      ? el("table", {}, el("thead", {}, el("tr", {}, [head, "", "call sites"].map((h) => el("th", {}, h)))),
+          el("tbody", {}, calls.map((c) => el("tr", {},
+            el("td", { class: "mono" }, c.library ? c.name : link(c.name, "proc", c.name)),
+            el("td", { class: "sub" }, [c.library ? "library" : null, c.indirect ? "via pointer" : null].filter(Boolean).join(", ")),
+            el("td", { class: "mono" }, sites(c.sites))))))
+      : el("div", { class: "empty" }, none);
     fill(pane,
       el("h2", { class: "mono" }, p.name),
       el("div", { class: "meta" }, p.nodes.length + " nodes" + (p.undefined ? " · undefined procedure" : "")
         + " · click a node in the graph or below"),
+      el("h3", {}, "Callers (" + p.callers.length + ")"),
+      callTable(p.callers, "caller", "no caller in the program"),
+      el("h3", {}, "Callees (" + p.callees.length + ")"),
+      callTable(p.callees, "callee", "calls nothing"),
+      el("h3", {}, "Nodes"),
       el("table", {}, el("thead", {}, el("tr", {}, ["node", "command", "in", "out"].map((h) => el("th", {}, h)))),
         el("tbody", {}, rows)));
   } catch (e) { fail(pane, e); }
