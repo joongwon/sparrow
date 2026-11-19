@@ -78,6 +78,8 @@ main { display: grid; grid-template-columns: var(--split, 50%) 6px minmax(0, 1fr
 .legend i.proven { border-color: var(--good); }
 .legend i.bot { border-color: var(--warn); }
 .legend i.sel { border-color: var(--accent); background: var(--accent-bg); }
+.legend i.ignored { border-style: dashed; }
+.sub { color: var(--muted); font-size: 12px; }
 #graph { flex: 1; overflow: auto; min-height: 0; padding: 12px; }
 #graph svg { display: block; }
 #graph g.node { cursor: pointer; }
@@ -85,6 +87,8 @@ main { display: grid; grid-template-columns: var(--split, 50%) 6px minmax(0, 1fr
 #graph g.node text { fill: var(--text); }
 #graph g.node.call path, #graph g.node.call polygon { fill: var(--code); }
 #graph g.node.entry path, #graph g.node.exit path { fill: var(--accent-bg); }
+#graph g.node.ignored path { stroke-dasharray: 3 2; }
+#graph g.node.ignored text { fill: var(--muted); }
 #graph g.node.alarm-unproven path { stroke: var(--bad); stroke-width: 2; }
 #graph g.node.alarm-proven path { stroke: var(--good); stroke-width: 2; }
 #graph g.node.alarm-bot path { stroke: var(--warn); stroke-width: 2; }
@@ -148,6 +152,7 @@ tr.click:hover td { background: var(--accent-bg); }
         <span><i class="call"></i>call</span><span><i class="unproven"></i>unproven alarm</span>
         <span><i class="bot"></i>bot alarm</span><span><i class="proven"></i>proven</span>
         <span><i class="sel"></i>selected</span>
+        <span title="an assume whose condition the interval analysis cannot simplify, so does not prune with"><i class="ignored"></i>ignored condition</span>
       </div>
       <div id="graph"><div class="empty">Pick a procedure to see its CFG.</div></div>
     </section>
@@ -430,6 +435,9 @@ async function showNode(id) {
       el("div", { class: "meta" }, "in ", link(n.proc, "proc", n.proc),
         locText(n.cmd.location) ? " · " + locText(n.cmd.location) : null),
       el("div", {}, el("span", { class: "cmd mono" }, n.cmd.text)),
+      n.cmd.original ? el("div", { class: "sub mono", style: "margin-top:4px" }, "as written: ", n.cmd.original) : null,
+      n.cmd.ignored ? el("div", { class: "sub", style: "margin-top:4px" },
+        "the interval analysis cannot simplify this condition, so it does not prune with it") : null,
       el("div", { class: "meta", style: "margin-top:8px" }, "pred ", ids(me.pred), " · succ ", ids(me.succ),
         me.callees && me.callees.length ? [" · calls ", me.callees.map((c, i) => [i ? ", " : "", link(c, "proc", c)])] : null),
       n.alarms.length ? [el("h3", {}, "Alarms at this node"),

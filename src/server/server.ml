@@ -183,10 +183,37 @@ let memory_json ~q ~offset ~limit mem =
       ("entries", `List page);
     ]
 
+(* How a command is shown.  An assume shows the condition the interval
+   analysis prunes with ([CilHelper.make_cond_simple], as in [ItvSem.prune]),
+   with the condition as written in [original] when they differ; a condition
+   it cannot simplify does not prune: it is shown as written and [ignored]. *)
+type shown_cmd = { text : string; ignored : bool; original : string option }
+
+let shown_cmd cmd =
+  let written = IntraCfg.Cmd.to_string cmd in
+  match cmd with
+  | IntraCfg.Cmd.Cassume (e, _) -> (
+      match CilHelper.make_cond_simple e with
+      | Some simple ->
+          let text = "assume(" ^ CilHelper.s_exp simple ^ ")" in
+          {
+            text;
+            ignored = false;
+            original = (if text = written then None else Some written);
+          }
+      | None -> { text = written; ignored = true; original = None })
+  | _ -> { text = written; ignored = false; original = None }
+
+let ignored_mark = " (ignored)"
+
 let cmd_json cmd =
+  let shown = shown_cmd cmd in
   `Assoc
     [
-      ("text", `String (IntraCfg.Cmd.to_string cmd));
+      ("text", `String (shown.text ^ if shown.ignored then ignored_mark else ""));
+      ("ignored", `Bool shown.ignored);
+      ( "original",
+        match shown.original with Some o -> `String o | None -> `Null );
       ("location", location_json (IntraCfg.Cmd.location_of cmd));
     ]
 
@@ -224,7 +251,8 @@ let alarm_json index (q : Report.query) =
 (* A procedure's CFG as SVG, laid out by Graphviz                      *)
 
 (* The SVG [g] element of a node has the node's id as its [id] and the
-   classes [entry], [exit], [call] and [alarm-<status>] that apply. *)
+   classes [entry], [exit], [call], [ignored] (an assume whose condition is
+   not pruned with, see [shown_cmd]) and [alarm-<status>] that apply. *)
 
 let dot_string s =
   let b = Buffer.create (String.length s + 8) in
@@ -268,6 +296,7 @@ let cfg_dot l name =
   List.iter
     (fun n ->
       let node = InterCfg.Node.make name n in
+      let shown = shown_cmd (IntraCfg.find_cmd n cfg) in
       let classes =
         List.filter_map Fun.id
           [
@@ -276,6 +305,7 @@ let cfg_dot l name =
             (if IntraCfg.Node.equal n IntraCfg.Node.exit then Some "exit"
              else None);
             (if InterCfg.is_callnode node icfg then Some "call" else None);
+            (if shown.ignored then Some "ignored" else None);
             Option.map
               (fun s -> "alarm-" ^ status_string s)
               (Hashtbl.find_opt l.node_status (id n));
@@ -284,8 +314,9 @@ let cfg_dot l name =
       let label =
         match IntraCfg.find_cmd n cfg with
         | IntraCfg.Cmd.Cskip -> IntraCfg.Node.to_string n
-        | cmd ->
-            IntraCfg.Node.to_string n ^ ": " ^ shorten (IntraCfg.Cmd.to_string cmd)
+        | _ ->
+            IntraCfg.Node.to_string n ^ ": " ^ shorten shown.text
+            ^ if shown.ignored then ignored_mark else ""
       in
       Printf.bprintf b "%s [id=%s, class=%s, label=%s];\n" (dot_string (id n))
         (dot_string (id n))
