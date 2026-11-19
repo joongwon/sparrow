@@ -80,6 +80,8 @@ main { display: grid; grid-template-columns: var(--split, 50%) 6px minmax(0, 1fr
 .legend i.sel { border-color: var(--accent); background: var(--accent-bg); }
 .legend i.ignored { border-style: dashed; }
 .sub { color: var(--muted); font-size: 12px; }
+.signature { background: var(--code); border-radius: 6px; padding: 6px 10px; margin: 6px 0 8px;
+  white-space: pre-wrap; word-break: break-word; }
 #graph { flex: 1; overflow: auto; min-height: 0; padding: 12px; }
 #graph svg { display: block; }
 #graph g.node { cursor: pointer; }
@@ -385,8 +387,9 @@ async function showProc(name) {
       : el("div", { class: "empty" }, none);
     fill(pane,
       el("h2", { class: "mono" }, p.name),
-      el("div", { class: "meta" }, p.nodes.length + " nodes" + (p.undefined ? " · undefined procedure" : "")
-        + " · click a node in the graph or below"),
+      el("div", { class: "signature mono" }, p.signature),
+      el("div", { class: "meta" }, [locText(p.declared_at), p.nodes.length + " nodes",
+        p.undefined ? "undefined procedure" : null, "click a node in the graph or below"].filter(Boolean).join(" · ")),
       el("h3", {}, "Callers (" + p.callers.length + ")"),
       callTable(p.callers, "caller", "no caller in the program"),
       el("h3", {}, "Callees (" + p.callees.length + ")"),

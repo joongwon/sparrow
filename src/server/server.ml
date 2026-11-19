@@ -527,6 +527,54 @@ let calls_json l ~key calls =
 
 let calls_in table name = Option.value (Hashtbl.find_opt table name) ~default:[]
 
+(* [s] without its [__attribute__((...))]s (linkage and visibility, which
+   CIL prints inside the declarator) and with C's usual spacing *)
+let tidy_declaration s =
+  let b = Buffer.create (String.length s) in
+  let n = String.length s and key = "__attribute__" in
+  let rec skip_parens i depth =
+    if i >= n then n
+    else
+      match s.[i] with
+      | '(' -> skip_parens (i + 1) (depth + 1)
+      | ')' -> if depth = 1 then i + 1 else skip_parens (i + 1) (depth - 1)
+      | _ -> skip_parens (i + 1) depth
+  in
+  let rec go i =
+    if i < n then
+      if i + String.length key <= n && String.sub s i (String.length key) = key
+      then
+        let j = i + String.length key in
+        let j = if j < n && s.[j] = '(' then skip_parens j 0 else j in
+        go j
+      else (
+        Buffer.add_char b s.[i];
+        go (i + 1))
+  in
+  go 0;
+  let s = Buffer.contents b in
+  let s = Str.global_replace (Str.regexp "[ \t\n]+") " " s in
+  let s = Str.global_replace (Str.regexp " \\([,)]\\)") "\\1" s in
+  String.trim s
+
+(* The C declaration of a procedure: storage, return type, name and the
+   parameters with their types, as CIL prints a declarator *)
+let signature (fd : Sparrow_cil.fundec) =
+  let v = fd.Sparrow_cil.svar in
+  let declarator =
+    Sparrow_cil.Pretty.sprint ~width:1000
+      (Sparrow_cil.defaultCilPrinter#pType
+         (Some (Sparrow_cil.Pretty.text v.Sparrow_cil.vname))
+         () v.Sparrow_cil.vtype)
+  in
+  (match v.Sparrow_cil.vstorage with
+   | Sparrow_cil.Static -> "static "
+   | Sparrow_cil.Extern -> "extern "
+   | Sparrow_cil.Register -> "register "
+   | Sparrow_cil.NoStorage -> "")
+  ^ (if v.Sparrow_cil.vinline then "inline " else "")
+  ^ tidy_declaration declarator
+
 (* A procedure's nodes from the entry, depth first with successors in id
    order, then whatever that walk does not reach. *)
 let proc l req =
@@ -582,6 +630,8 @@ let proc l req =
     [
       ("name", `String name);
       ("undefined", `Bool (Global.is_undef name l.state.AnalysisState.global));
+      ("signature", `String (signature (IntraCfg.get_fd cfg)));
+      ("declared_at", location_json (IntraCfg.get_fd cfg).Sparrow_cil.svar.Sparrow_cil.vdecl);
       ( "callers",
         `List
           (calls_json l
