@@ -19,10 +19,6 @@ let g_clock = ref 0.0
 let l_clock = ref 0.0
 
 (* cost metrics captured per phase *)
-let last_widen_iters = ref 0
-let last_narrow_iters = ref 0
-let widen_time = ref 0.0
-let narrow_time = ref 0.0
 
 module type S = sig
   module Dom : InstrumentedMem.S
@@ -183,12 +179,9 @@ module MakeWithAccess (Sem : AccessSem.S) = struct
       analysis_state =
    fun visit dug nodes (worklist, global) ->
     total_iterations := 0;
-    let t0 = Sys.time () in
     ( worklist |> Worklist.push_init nodes |> fun init_worklist ->
       iterate visit dug (init_worklist, global) )
     |> fun x ->
-    widen_time := Sys.time () -. t0;
-    last_widen_iters := !total_iterations;
     my_prerr_endline
       ("\n#iteration in widening : " ^ string_of_int !total_iterations);
     x
@@ -200,7 +193,6 @@ module MakeWithAccess (Sem : AccessSem.S) = struct
       Worklist.t * (Global.t * Table.t * Table.t) =
    fun spec dug (worklist, state) ->
     total_iterations := 0;
-    let t0 = Sys.time () in
     ( worklist
     |> Worklist.push_init
          (if BatSet.is_empty initnodes then DUGraph.nodesof dug else initnodes)
@@ -209,8 +201,6 @@ module MakeWithAccess (Sem : AccessSem.S) = struct
         (analyze_node_with_otable (Dom.narrow, fun x y -> Dom.le y x) spec)
         dug (init_worklist, state) )
     |> fun x ->
-    narrow_time := Sys.time () -. t0;
-    last_narrow_iters := !total_iterations;
     my_prerr_endline
       ("#iteration in narrowing : " ^ string_of_int !total_iterations);
     x

@@ -92,7 +92,6 @@ module Make (DUGraph : Dug.S) = struct
       Profiler.finish_event "Worklist.get_order";
       (* The band condition of the canonical order (report only: the
          whole-program analysis itself does not depend on it). *)
-      CanonOrder.last_band_violations := d.CanonOrder.band_violations;
       List.iter
         (fun v ->
           prerr_endline
@@ -113,11 +112,6 @@ module Make (DUGraph : Dug.S) = struct
               head_order = d.head_orders.(i);
             })
         nodes;
-      CanonOrder.last_heads :=
-        Array.to_list nodes
-        |> List.filter (fun n -> (H.find entries n).head)
-        |> List.map CanonOrder.key_of
-        |> List.sort CanonOrder.compare_key;
       let sccs =
         Array.to_list d.top_components
         |> List.map (fun scc ->

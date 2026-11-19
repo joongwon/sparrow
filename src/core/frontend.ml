@@ -16,7 +16,6 @@ module F = Frontc
 module E = Errormsg
 
 let files = ref []
-let marshal_file = ref ""
 
 let args : string -> unit =
  fun f ->

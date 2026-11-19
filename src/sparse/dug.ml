@@ -26,11 +26,6 @@ open BasicDom
    argument for every set operation; only the physical identity of the
    tree nodes (and possibly the tree's shape, never its elements) differs.
    Residents are held weakly: a label no edge holds any more is collected. *)
-module Label_intern_stats = struct
-  let calls = ref 0
-  let shared = ref 0
-end
-
 module Label_intern
     (P : PowDom.CPO)
     (E : sig
@@ -74,13 +69,7 @@ struct
   let table = W.create 4096
 
   let intern set =
-    if P.is_empty set then set
-    else begin
-      let resident = W.merge table set in
-      incr Label_intern_stats.calls;
-      if resident != set then incr Label_intern_stats.shared;
-      resident
-    end
+    if P.is_empty set then set else W.merge table set
 end
 
 module type S = sig

@@ -125,10 +125,6 @@ type construction_temp_provenance_row = {
 val string_of_construction_temp_generation_role :
   construction_temp_generation_role -> string
 
-val global_provenance_recording : bool ref
-(** Out-of-band observation switch; turning it off lets a check confirm that the
-    construction does not depend on the recording. *)
-
 val global_provenance_rows : unit -> global_provenance_row list
 (** Rows from the most recent global-CFG construction, finalized at the
     unreachable-node trimming decision. *)

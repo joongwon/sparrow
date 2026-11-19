@@ -278,7 +278,6 @@ type pending_construction_temp = {
   pending_temp_original_nodes : Node.t list;
 }
 
-let global_provenance_recording = ref true
 let global_provenance_tracking_ready = ref false
 let global_provenance_observing_current_cfg = ref false
 
@@ -313,7 +312,7 @@ let construction_temp_events node =
   Option.value (Hashtbl.find_opt construction_temp_node_events node) ~default:[]
 
 let construction_temp_assign events nodes =
-  if !global_provenance_recording && !global_provenance_tracking_ready then
+  if !global_provenance_tracking_ready then
     NodeSet.iter
       (fun node ->
         let old = construction_temp_events node in
@@ -322,11 +321,11 @@ let construction_temp_assign events nodes =
       nodes
 
 let construction_temp_remove nodes =
-  if !global_provenance_recording && !global_provenance_tracking_ready then
+  if !global_provenance_tracking_ready then
     NodeSet.iter (Hashtbl.remove construction_temp_node_events) nodes
 
 let construction_temp_replace removed added =
-  if !global_provenance_recording && !global_provenance_tracking_ready then begin
+  if !global_provenance_tracking_ready then begin
     let events =
       NodeSet.fold
         (fun node events -> construction_temp_events node @ events)
@@ -347,7 +346,7 @@ let construction_temp_varinfo = function
 
 let record_construction_temp_for_owner owner ~path ~child_path ~role ~typ
     ~payload ~lvalue nodes =
-  if !global_provenance_recording && !global_provenance_tracking_ready then begin
+  if !global_provenance_tracking_ready then begin
     let id = !next_construction_temp_id in
     incr next_construction_temp_id;
     let original_nodes = NodeSet.elements nodes in
@@ -381,8 +380,7 @@ let global_provenance_owners node =
 
 let global_provenance_assign owners nodes =
   if
-    !global_provenance_recording
-    && !global_provenance_tracking_ready
+    !global_provenance_tracking_ready
     && !global_provenance_observing_current_cfg
   then
     NodeSet.iter
@@ -394,8 +392,7 @@ let global_provenance_assign owners nodes =
 
 let global_provenance_remove nodes =
   if
-    !global_provenance_recording
-    && !global_provenance_tracking_ready
+    !global_provenance_tracking_ready
     && !global_provenance_observing_current_cfg
   then begin
     NodeSet.iter (Hashtbl.remove global_provenance_node_owners) nodes;
@@ -404,8 +401,7 @@ let global_provenance_remove nodes =
 
 let global_provenance_replace removed added =
   if
-    !global_provenance_recording
-    && !global_provenance_tracking_ready
+    !global_provenance_tracking_ready
     && !global_provenance_observing_current_cfg
   then begin
     let owners =
@@ -421,8 +417,7 @@ let global_provenance_replace removed added =
 
 let global_provenance_record_drop owners node mechanism =
   if
-    !global_provenance_recording
-    && !global_provenance_tracking_ready
+    !global_provenance_tracking_ready
     && !global_provenance_observing_current_cfg
   then
     List.iter
@@ -1286,8 +1281,8 @@ let generate_global_chain ?(defined_extern_storage = true) globals fd =
   Hashtbl.clear global_provenance_node_owners;
   Hashtbl.clear global_provenance_decision_drops;
   Hashtbl.clear construction_temp_node_events;
-  global_provenance_tracking_ready := !global_provenance_recording;
-  global_provenance_observing_current_cfg := !global_provenance_recording;
+  global_provenance_tracking_ready := true;
+  global_provenance_observing_current_cfg := true;
   let global_index = ref (-1) in
   let chain_index = ref (-1) in
   let initializer_index = ref (-1) in
@@ -1387,7 +1382,7 @@ let generate_global_chain ?(defined_extern_storage = true) globals fd =
     in
     (match metadata with
     | Some (chain, initializer_slot, name, kind, location)
-      when !global_provenance_recording && not (NodeSet.is_empty generated) ->
+      when not (NodeSet.is_empty generated) ->
         let first = Option.value (Hashtbl.find_opt next_item gidx) ~default:0 in
         generated |> NodeSet.elements
         |> List.iteri (fun index generated_node ->
@@ -1562,8 +1557,7 @@ let merge_vertex g vl =
     |> remove_edge replacement replacement
   in
   if
-    !global_provenance_recording
-    && !global_provenance_tracking_ready
+    !global_provenance_tracking_ready
     && !global_provenance_observing_current_cfg
   then begin
     global_provenance_remove (NodeSet.of_list vl);
@@ -1690,12 +1684,7 @@ let optimize g =
   optimize_with optimize_array_init g
 
 let finish_global_provenance ~unreachable g =
-  if not !global_provenance_recording then begin
-    completed_global_provenance_rows := [];
-    completed_construction_temp_rows := [];
-    global_provenance_tracking_ready := false
-  end
-  else begin
+  begin
     let graph_nodes = NodeSet.of_list (nodesof g) in
     let reachable_order =
       let rec visit seen order = function

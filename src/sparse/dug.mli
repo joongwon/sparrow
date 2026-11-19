@@ -14,11 +14,6 @@
     in order, each [E.equal] to the argument's (so the same representative of
     every location), or makes the argument resident. Residents are held weakly.
 *)
-module Label_intern_stats : sig
-  val calls : int ref
-  val shared : int ref
-end
-
 module Label_intern
     (P : PowDom.CPO)
     (E : sig

@@ -11,7 +11,6 @@ open Sparrow_cil
 (** Frontend *)
 
 val files : string list ref
-val marshal_file : string ref
 val args : string -> unit
 val parseOneFile : string -> Sparrow_cil.file
 val parse : unit -> Sparrow_cil.file

@@ -100,16 +100,8 @@ let default_key node =
     position = position_of_cfgnode (InterCfg.Node.get_cfgnode node);
   }
 
-(* A driver may install its own node key here; without one the key is the
-   procedure and the position in its CFG (default_key). *)
-let node_key : (BasicDom.Node.t -> key) option ref = ref None
-
-let key_of node =
-  match !node_key with Some f -> f node | None -> default_key node
-
-(* Observation only: the loop heads (keys) of the most recent worklist order,
-   for comparing widening points between runs. *)
-let last_heads : key list ref = ref []
+(* The key of a node: its procedure and its position in its CFG. *)
+let key_of = default_key
 
 (* ------------------------------------------------------------------ *)
 (* Decomposition kernel over vertices 0..n-1 numbered in key order.     *)
@@ -526,9 +518,6 @@ let band_check orders head_orders sccs owner (records : band_record array) =
         :: !violations
   done;
   List.rev !violations
-
-(* The band check of the most recent whole-program worklist order. *)
-let last_band_violations : band_violation list ref = ref []
 
 let string_of_band_violation name v =
   Printf.sprintf "kind=%s head=%s size=%d depth=%d interval=[%d,%d] limit=%d%s"

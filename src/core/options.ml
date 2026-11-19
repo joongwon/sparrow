@@ -96,10 +96,8 @@ let marshal_dir = ref "marshal"
 (* Debug *)
 let debug = ref false
 let oct_debug = ref false
-let taint_debug = ref false
 
 (* ETC *)
-let print_premem = ref false
 let verbose = ref 1
 let int_overflow = ref false
 
@@ -114,9 +112,6 @@ let opts =
     ( "-oct_debug",
       Arg.Set oct_debug,
       "Print debug information for octagon analysis" );
-    ( "-taint_debug",
-      Arg.Set taint_debug,
-      "Print debug information for taint analysis" );
     ("-pack_impact", Arg.Set pack_impact, "Packing by impact pre-analysis");
     ("-pack_manual", Arg.Set pack_manual, "Pacing by manual annotation");
     ("-nd", Arg.Set nd, "Print Null-dereference alarms");

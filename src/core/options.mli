@@ -81,7 +81,6 @@ val profile : bool ref
 val noalarm : bool ref
 val debug : bool ref
 val oct_debug : bool ref
-val print_premem : bool ref
 val verbose : int ref
 
 (** {2 Marshaling} *)

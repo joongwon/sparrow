@@ -16,9 +16,6 @@ open ItvDom
 (* ***************************** *
  * Flow-insensitive pre-analysis *
  * ***************************** *)
-(* number of fixpoint rounds of the last pre-analysis run (cost metric) *)
-let last_pre_iters = ref 0
-
 let onestep_transfer : Node.t list -> Mem.t * Global.t -> Mem.t * Global.t =
  fun nodes (mem, global) ->
   list_fold
@@ -33,7 +30,6 @@ let rec fixpt : Node.t list -> int -> Mem.t * Global.t -> Mem.t * Global.t =
   let mem', global' = onestep_transfer nodes (mem, global) in
   let mem' = Mem.widen mem mem' in
   if Mem.le mem' mem && Dump.le global'.dump global.dump then (
-    last_pre_iters := k;
     my_prerr_newline ();
     (mem', global'))
   else fixpt nodes (k + 1) (mem', global')
