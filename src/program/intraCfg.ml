@@ -176,9 +176,6 @@ let get_pid : t -> string = fun g -> g.fd.svar.vname
 let get_fd : t -> Sparrow_cil.fundec = fun g -> g.fd
 let get_formals : t -> Sparrow_cil.varinfo list = fun g -> g.fd.sformals
 
-let get_formals_lval : t -> Sparrow_cil.lval list =
- fun g -> List.map Sparrow_cil.var g.fd.sformals
-
 let get_scc_list : t -> node list list = fun g -> g.scc_list
 
 let children_of_dom_tree node g =
@@ -705,25 +702,6 @@ let rec process_init :
           process_init fd lv init loc node g)
         (entry, g) ilist
 
-let rec process_gvar :
-    Sparrow_cil.fundec ->
-    Sparrow_cil.lval ->
-    Sparrow_cil.initinfo ->
-    Sparrow_cil.location ->
-    node ->
-    t ->
-    node * t =
- fun fd lv i loc entry g ->
-  match (Sparrow_cil.typeOfLval lv, i.init) with
-  | _, None -> process_gvardecl fd lv loc entry g (* e.g., int global;     *)
-  | _, Some (SingleInit exp as init) ->
-      (* e.g., int global = 1; *)
-      process_init fd lv init loc entry g
-  | _, Some (CompoundInit (typ, ilist) as init) ->
-      (* e.g., int global = { 1, 2 }; *)
-      let node, g = process_gvardecl fd lv loc entry g in
-      process_init fd lv init loc node g
-
 let get_main_dec :
     Sparrow_cil.global list ->
     (Sparrow_cil.fundec * Sparrow_cil.location) option =
@@ -1146,17 +1124,6 @@ let print_dot : out_channel -> t -> unit =
       fprintf chan "%s -> %s\n" (Node.to_string v1) (Node.to_string v2))
     g.graph;
   fprintf chan "}\n"
-
-let print_dom_fronts dom_fronts =
-  BatMap.iter
-    (fun node fronts ->
-      prerr_string (Node.to_string node ^ ": ");
-      NodeSet.iter (fun fr -> prerr_string (Node.to_string fr ^ " ")) fronts;
-      prerr_endline "")
-    dom_fronts
-
-let print_dom_tree dom_tree =
-  prerr_endline (string_of_map Node.to_string Node.to_string dom_tree)
 
 module Json = Yojson.Safe
 
